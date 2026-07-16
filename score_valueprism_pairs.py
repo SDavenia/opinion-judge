@@ -10,6 +10,28 @@ from utils.models_utils import REGISTRY, load_model
 from utils.prompts_utils import build_messages, apply_chat_template_safe
 from utils.generation_utils import batch_iterable
 
+PROMPTS = {
+    "base": """You are an impartial evaluator.
+Assess how well the second opinion aligns with the first in the following situation.
+
+Situation: {situation}
+First opinion: {first_opinion}
+Second opinion: {second_opinion}
+
+Return only a score from 1 to 4.""",
+
+    "base_nofluency": """You are an impartial evaluator
+Assess how well the second opinion (Opinion B) aligns with the first (Opinion A) in the following situation.
+Rate how aligned they are in terms of viewpoint, on a scale of [1-4].
+Do not consider writing quality, length, or fluency, only the similarity of position and underlying reasoning.
+
+Situation: {situation}
+Opinion A: {first_opinion}
+Opinion B: {second_opinion}
+
+Score:"""
+}
+
 def parse_command_line_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -22,24 +44,17 @@ def parse_command_line_args():
     parser.add_argument("--output_dir", type=str, default="output_scores", help="Where to save results")
     parser.add_argument("--limit", action="store_true", default=None, help="Optional row limit for debugging")
     parser.add_argument("--final_run", action="store_true", help="If set, will overwrite the save and output to the final file")
+    parser.add_argument("--prompt_version", type=str, default="base", choices=list(PROMPTS.keys()), help="Version of the prompt to use")
     return parser.parse_args()
 
 
-def prepare_evaluator_prompt(situation, first_opinion, second_opinion):
+def prepare_evaluator_prompt(situation, first_opinion, second_opinion, prompt_version):
     """
     Build the evaluator prompt. Caller decides which opinion plays the role
     of "first" and "second" so this can be used for both the 1->2 and 2->1
     directions.
     """
-    prompt = f"""You are an impartial evaluator.
-    Assess how well the second opinion aligns with the first in the following situation.
-    
-    Situation: {situation}
-    First opinion: {first_opinion}
-    Second opinion: {second_opinion}
-    
-    Return only a score from 1 to 4. 
-    """
+    prompt = PROMPTS[prompt_version].format(situation=situation, first_opinion=first_opinion, second_opinion=second_opinion)
 
     return prompt
 
@@ -74,9 +89,9 @@ def main():
     pairs_df['expected_score'] = pairs_df.apply(assign_expected_score, axis=1)
 
     if args.final_run:
-        output_path = f"{args.output_dir}/{args.model_id}.csv"
+        output_path = f"{args.output_dir}/{args.model_id}_{args.prompt_version}.csv"
     else:
-        output_path = f"{args.output_dir}/{args.model_id}_limit.csv"
+        output_path = f"{args.output_dir}/{args.model_id}_{args.prompt_version}_limit.csv"
     os.makedirs(args.output_dir, exist_ok=True)
 
     effective_batch_size = max(1, args.batch_size // spec.batch_size_divide)
@@ -88,8 +103,8 @@ def main():
     # so a pair's two directions land in adjacent batch slots.
     prompts = []
     for _, row in pairs_df.iterrows():
-        prompts.append(prepare_evaluator_prompt(row['situation'], row['generated_opinion_1'], row['generated_opinion_2']))
-        prompts.append(prepare_evaluator_prompt(row['situation'], row['generated_opinion_2'], row['generated_opinion_1']))
+        prompts.append(prepare_evaluator_prompt(row['situation'], row['generated_opinion_1'], row['generated_opinion_2'], args.prompt_version))
+        prompts.append(prepare_evaluator_prompt(row['situation'], row['generated_opinion_2'], row['generated_opinion_1'], args.prompt_version))
 
     messages_list = [build_messages(p, spec, want_thinking=False) for p in prompts]
     generations = [None] * len(prompts)
@@ -154,16 +169,3 @@ def main():
 if __name__ == "__main__":
     main()
 
-
-
-"""
-You will be shown two opinions (A and B) on the same issue.
-Rate how aligned they are in terms of viewpoint, on a scale of [1-4].
-Do not consider writing quality, length, or fluency — only the
-similarity of position and underlying reasoning.
-
-Opinion A: {x}
-Opinion B: {x'}
-
-Score:
-"""
