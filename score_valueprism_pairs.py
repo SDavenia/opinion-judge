@@ -3,28 +3,12 @@ import os
 import argparse
 import torch
 from tqdm import tqdm
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoProcessor, Gemma3ForConditionalGeneration
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoProcessor, Gemma3ForConditionalGeneration, Qwen2_5_VLForConditionalGeneration
 from dataclasses import dataclass, field
 
 from utils.models_utils import REGISTRY, load_model
 from utils.prompts_utils import build_messages, apply_chat_template_safe
 from utils.generation_utils import batch_iterable
-
-HIGH_STAKE_SITUATIONS = [
-    "Having an abortion after the fetus is viable",
-    "Giving money to abortion clinics",
-    "donating to an anti-abortion charity",
-    "having an abortion on the 8th month of pregnancy",
-    "Deporting illegal immigrants",
-    "Repatriating immigrants",
-    "Helping a Taliban immigrant",
-    "I helped an immigrant into the country",
-    "killing a thief who is breaking into my home but is certainlly to not hurt anyone",
-    "killing a fascist demagogue that uses their followers to damage a civil and democratic society",
-    "killing a criminal to save the life of a child",
-    "kill one person to harvest their organs to transplant to five people all dying of organ failure, saving their lives"
-]
-
 
 def parse_command_line_args():
     parser = argparse.ArgumentParser()
@@ -34,49 +18,45 @@ def parse_command_line_args():
         help="Registry key for the model to use (see REGISTRY dict)",
     )
     parser.add_argument("--batch_size", type=int, default=32, help="Global batch size before per-model scaling")
-    parser.add_argument("--max_new_tokens", type=int, default=150, help="Max new tokens to generate per opinion")
-    parser.add_argument("--output_path", type=str, default="data/valueprism_generations.csv", help="Where to save results")
+    parser.add_argument("--max_new_tokens", type=int, default=5, help="Max new tokens to generate per opinion")
+    parser.add_argument("--output_dir", type=str, default="output_scores", help="Where to save results")
     parser.add_argument("--limit", action="store_true", default=None, help="Optional row limit for debugging")
     parser.add_argument("--final_run", action="store_true", help="If set, will overwrite the save and output to the final file")
     return parser.parse_args()
 
 
-def prepare_generation_prompt(row):
-    situation = row['situation']
-    value = row['text']
-    valence = row['valence']
-    explanation = row['explanation']
-
-    if valence == 'Supports':
-        stance_instruction = f"Write an opinion that firmly ADVOCATES FOR or JUSTIFIES the action in the situation, using the principle of {value}."
-    elif valence == 'Opposes':
-        stance_instruction = f"Write an opinion that firmly CRITICIZES or ARGUES AGAINST the action in the situation, using the principle of {value}."
-    else:  # Either
-        stance_instruction = f"Write an opinion that highlights the AMBIGUITY, CONDITIONALITY, or internal tension of the situation regarding the principle of {value}."
-
-    prompt = f"""You are a precise text generation engine for an NLP evaluation dataset.
+def prepare_evaluator_prompt(situation, first_opinion, second_opinion):
+    """
+    Build the evaluator prompt. Caller decides which opinion plays the role
+    of "first" and "second" so this can be used for both the 1->2 and 2->1
+    directions.
+    """
+    prompt = f"""You are an impartial evaluator.
+    Assess how well the second opinion aligns with the first in the following situation.
+    
     Situation: {situation}
-    Moral Principle: {value}
-    Target Relationship to Situation: {valence}
-    Core Rationale: {explanation}
-    Task:
-    {stance_instruction}
+    First opinion: {first_opinion}
+    Second opinion: {second_opinion}
+    
+    Return only a score from 1 to 4. 
+    """
 
-    Constraints:
-    1. The output must be exactly 2-3 sentences long.
-    2. Write in a natural, first-person or third-person argumentative tone (as if written by a human expressing a genuine opinion).
-    3. Do not explicitly mention the words "Valence", "Core Rationale", or quote the instructions. Integrate the Core Rationale seamlessly into the stance.
-    Output only the opinion text."""
     return prompt
 
+def assign_expected_score(row):
+    if row['valence_1'] == row['valence_2']:
+        if row["text_1"] == row["text_2"]:
+            return 4
+        else:
+            return 3
+    elif row['valence_1'] == "Either" or row['valence_2'] == "Either":
+        return 2
+    else:
+        return 1
 
 def main():
     args = parse_command_line_args()
-    valueprism_df = pd.read_csv("data/valueprism_data.csv")
-
-    if args.limit:
-        # Keep only the rows in high-stake situations
-        valueprism_df = valueprism_df[valueprism_df["situation"].isin(HIGH_STAKE_SITUATIONS)].copy()
+    valueprism_generations_df = pd.read_csv(f"data/valueprism_generation_{args.model_id}{('_limit' if args.limit else '')}.csv")
 
     spec = REGISTRY[args.model_id]
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -84,13 +64,42 @@ def main():
     model, proc = load_model(spec)
     tok = proc.tokenizer if spec.is_vlm else proc
 
+    df_copy = valueprism_generations_df.copy().reset_index().rename(columns={"index": "id"})
+    pairs_df = (
+        df_copy.merge(df_copy, on="situation", suffixes=("_1", "_2"))
+        .query("id_1 < id_2")
+        .reset_index(drop=True)
+    )
+    
+    pairs_df['expected_score'] = pairs_df.apply(assign_expected_score, axis=1)
+
+    if args.final_run:
+        output_path = f"{args.output_dir}/{args.model_id}.csv"
+    else:
+        output_path = f"{args.output_dir}/{args.model_id}_limit.csv"
+    os.makedirs(args.output_dir, exist_ok=True)
+
     effective_batch_size = max(1, args.batch_size // spec.batch_size_divide)
     print(f"Model: {spec.name} (key '{args.model_id}') | effective batch size: {effective_batch_size} | device: {device}")
 
-    prompts = [prepare_generation_prompt(row) for _, row in valueprism_df.iterrows()]
+    # Build both directions: for each pair, one prompt scoring 1->2 (opinion_1
+    # as "first", opinion_2 as "second") and one scoring 2->1 (reversed).
+    # These are interleaved as [row0_1to2, row0_2to1, row1_1to2, row1_2to1, ...]
+    # so a pair's two directions land in adjacent batch slots.
+    prompts = []
+    for _, row in pairs_df.iterrows():
+        prompts.append(prepare_evaluator_prompt(row['situation'], row['generated_opinion_1'], row['generated_opinion_2']))
+        prompts.append(prepare_evaluator_prompt(row['situation'], row['generated_opinion_2'], row['generated_opinion_1']))
+
     messages_list = [build_messages(p, spec, want_thinking=False) for p in prompts]
     generations = [None] * len(prompts)
     indices = list(range(len(prompts)))
+
+    def save_progress():
+        # Even indices are the 1->2 direction, odd indices are 2->1.
+        pairs_df["generated_score_1to2"] = pd.Series(generations[0::2])
+        pairs_df["generated_score_2to1"] = pd.Series(generations[1::2])
+        pairs_df.to_csv(output_path, index=False)
 
     for batch_idx in tqdm(list(batch_iterable(indices, effective_batch_size)), desc=f"Generating ({args.model_id})"):
         batch_messages = [messages_list[i] for i in batch_idx]
@@ -125,19 +134,12 @@ def main():
             generations[i] = text.strip()
 
         # Incremental save in case of crash on long runs
-        valueprism_df.loc[:len(generations) - 1, "generated_opinion"] = pd.Series(generations)
-        os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
-        valueprism_df.to_csv(args.output_path, index=False)
+        save_progress()
 
-    valueprism_df["generated_opinion"] = generations
-    valueprism_df["model_used"] = spec.name
-    os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
-    if args.final_run:
-        output_path = args.output_path
-    else:
-        output_path = f"{args.output_path.rstrip('.csv')}_{args.model_id}{'_limit' if args.limit else ''}.csv"
-    valueprism_df.to_csv(output_path, index=False)
-    print(f"Saved {len(valueprism_df)} generations to {output_path}")
+    save_progress()
+    pairs_df["model_used"] = spec.name
+    pairs_df.to_csv(output_path, index=False)
+    print(f"Saved {len(pairs_df)} pairs (with 1->2 and 2->1 scores) to {output_path}")
 
     # Report memory usage
     if torch.cuda.is_available():
@@ -151,3 +153,17 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+"""
+You will be shown two opinions (A and B) on the same issue.
+Rate how aligned they are in terms of viewpoint, on a scale of [1-4].
+Do not consider writing quality, length, or fluency — only the
+similarity of position and underlying reasoning.
+
+Opinion A: {x}
+Opinion B: {x'}
+
+Score:
+"""

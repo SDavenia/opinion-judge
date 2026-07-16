@@ -1,8 +1,16 @@
 # Env file
 .env
 
+# vscode
+.vscode/
+
 # Python cache
 __pycache__/
 
 # data
 data/
+output_scores/
+
+# SLURM Runs
+sbatch_run/
+sbatch_output/
