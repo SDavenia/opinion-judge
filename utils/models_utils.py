@@ -38,6 +38,12 @@ REGISTRY = {
         is_vlm=False, supports_system_role=True,
         batch_size_divide=2,
     ),
+    "llama-3.1-8b": ModelSpec(
+        "meta-llama/Llama-3.1-8B-Instruct",
+        AutoModelForCausalLM, AutoTokenizer,
+        is_vlm=False, supports_system_role=True,
+        batch_size_divide=1,
+    ),
      "nvidia-nemotron-nano-9b": ModelSpec(
         "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
         AutoModelForCausalLM, AutoTokenizer,

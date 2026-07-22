@@ -138,15 +138,16 @@ def add_common_args(parser):
     return parser
 
 
-def resolve_output_path(args):
+def resolve_output_path(args,
+                        script_name: str):
     """
     # For final run, the generator id is not included (since we will have determined a best generator), while for all others it is.
     """
     if args.final_run:
-        path = f"{args.output_dir}/{args.judge_model_id}_{args.scoring_prompt_version}.csv"
+        path = f"{args.output_dir}/{script_name}/{args.judge_model_id}_{args.scoring_prompt_version}.csv"
     else:
         path = (
-            f"{args.output_dir}/{args.generation_model_id}_{args.generation_prompt_version}/"
+            f"{args.output_dir}/{script_name}/{args.generation_model_id}_{args.generation_prompt_version}/"
             f"{args.judge_model_id}_{args.scoring_prompt_version}_limit.csv"
         )
     os.makedirs(os.path.dirname(path), exist_ok=True)

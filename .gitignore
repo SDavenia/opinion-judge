@@ -1,5 +1,6 @@
 # Env file
 .env
+env
 
 # vscode
 .vscode/
@@ -14,3 +15,4 @@ output_scores/
 # SLURM Runs
 sbatch_run/
 sbatch_output/
+commands

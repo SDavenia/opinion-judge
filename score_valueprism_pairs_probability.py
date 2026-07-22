@@ -29,14 +29,17 @@ def parse_command_line_args():
     )
     parser.add_argument("--n_test", type=int, default=20, help="Number of pairs (x2 directions) to inspect in --test mode.")
     parser.add_argument("--max_new_tokens", type=int, default=5, help="Only used in --test mode, for the raw-generation comparison.")
+    parser.add_argument("--scoring_values", type=str, default="digits", help="Id of configuration for values passed in scoring")
     return parser.parse_args()
 
 
-def resolve_digit_token_aliases(tok, verbose=True):
+def resolve_digit_token_aliases(tok,
+                                scoring_values,
+                                verbose=True):
     """
     One-time, deterministic, no model calls: scan the full vocabulary and
     collect every token id whose decoded (stripped) text is a bare digit
-    '1'-'4'. A single digit can be represented by several distinct token
+    '1'-'4' (based on scoring_values). A single digit can be represented by several distinct token
     ids depending on BPE merges / leading-space conventions (e.g. "1" and
     " 1" may both exist and be usable by the model in different contexts),
     so we keep *all* aliases per digit rather than guessing a single
@@ -46,9 +49,9 @@ def resolve_digit_token_aliases(tok, verbose=True):
     This deliberately does not depend on the judge model ever actually
     producing a given digit -- it only depends on the tokenizer's vocab,
     so there's no "unseen in calibration sample -> unverified fallback"
-    gap, even for scales with more than 4 possible values.
+    gap, even for scales with more than the max possible values.
     """
-    aliases = {d: [] for d in DIGITS}
+    aliases = {d: [] for d in scoring_values}
     vocab_size = len(tok)
     for tid in range(vocab_size):
         try:
@@ -56,10 +59,10 @@ def resolve_digit_token_aliases(tok, verbose=True):
         except Exception:
             continue
         stripped = s.strip()
-        if stripped in DIGITS:
+        if stripped in scoring_values:
             aliases[stripped].append(tid)
 
-    missing = [d for d in DIGITS if not aliases[d]]
+    missing = [d for d in scoring_values if not aliases[d]]
     if missing:
         raise ValueError(
             f"No vocab token decodes to digit(s) {missing} for this tokenizer "
@@ -71,11 +74,11 @@ def resolve_digit_token_aliases(tok, verbose=True):
     return aliases
 
 
-def score_batch(model, tok, proc, spec, texts, digit_token_aliases, device):
+def score_batch(model, tok, proc, spec, texts, digit_token_aliases, device, scoring_values):
     """
     Single forward pass over a batch of already chat-templated prompts
     (generation prompt included, no assistant text). Returns:
-      - restricted_probs: (batch, 4) softmax-like distribution over the 4
+      - restricted_probs: (batch, len(scoring_values)) softmax-like distribution over the len(scoring_values)
         digits, where each digit's mass is the sum of the full-vocab
         probabilities of ALL of its alias token ids, renormalized to sum
         to 1 across digits.
@@ -89,8 +92,8 @@ def score_batch(model, tok, proc, spec, texts, digit_token_aliases, device):
         logits = model(**inputs).logits[:, -1, :]  # next-token logits after the prompt
 
     full_probs = torch.softmax(logits, dim=-1)
-    digit_probs = torch.zeros(full_probs.shape[0], len(DIGITS), device=full_probs.device)
-    for k, d in enumerate(DIGITS):
+    digit_probs = torch.zeros(full_probs.shape[0], len(scoring_values), device=full_probs.device)
+    for k, d in enumerate(scoring_values):
         ids = digit_token_aliases[d]
         digit_probs[:, k] = full_probs[:, ids].sum(dim=-1)
 
@@ -99,11 +102,11 @@ def score_batch(model, tok, proc, spec, texts, digit_token_aliases, device):
     return restricted_probs.cpu(), mass.cpu()
 
 
-def run_test_mode(args, model, tok, proc, spec, pairs_df, device):
+def run_test_mode(args, model, tok, proc, spec, pairs_df, device, scoring_values):
     entries = build_direction_prompts(pairs_df.head(args.n_test), args.scoring_prompt_version)
     prompts = [e[3] for e in entries]
 
-    digit_token_aliases = resolve_digit_token_aliases(tok)
+    digit_token_aliases = resolve_digit_token_aliases(tok, scoring_values=scoring_values)
     # Reverse lookup: any alias token id -> the digit it represents. Multiple
     # ids can map to the same digit; that's fine, we only need id -> digit here.
     id_to_digit = {tid: d for d, ids in digit_token_aliases.items() for tid in ids}
@@ -117,8 +120,8 @@ def run_test_mode(args, model, tok, proc, spec, pairs_df, device):
         gen_ids = model.generate(**inputs, max_new_tokens=args.max_new_tokens, do_sample=False, pad_token_id=tok.pad_token_id)
 
     full_probs = torch.softmax(logits, dim=-1)
-    digit_probs = torch.zeros(len(prompts), len(DIGITS))
-    for k, d in enumerate(DIGITS):
+    digit_probs = torch.zeros(len(prompts), len(scoring_values))
+    for k, d in enumerate(scoring_values):
         ids = digit_token_aliases[d]
         digit_probs[:, k] = full_probs[:, ids].cpu().sum(dim=-1)
     mass = digit_probs.sum(dim=-1)
@@ -127,9 +130,12 @@ def run_test_mode(args, model, tok, proc, spec, pairs_df, device):
     input_len = inputs["input_ids"].shape[1]
     raw_new = gen_ids[:, input_len:]
 
+    
+    p_cols = " ".join(f"{f'P{i+1}':6}" for i in range(len(scoring_values)))
+
     header = (
         f"{'dir':5} {'pair':10} {'raw (unstripped)':22} {'first_tok_id':13} "
-        f"{'gen_digit':9} {'argmax':7} {'match':6} {'mass(1-4)':10} {'P1':6} {'P2':6} {'P3':6} {'P4':6}"
+        f"{'gen_digit':9} {'argmax':7} {'match':6} {'mass(scoring_values)':10} {p_cols}"
     )
     print(header)
     print("-" * len(header))
@@ -144,12 +150,12 @@ def run_test_mode(args, model, tok, proc, spec, pairs_df, device):
         # digit-alias id at all -- worth flagging separately from a mismatch
         # where it IS a digit alias, just not the argmax one.
         first_tok_digit = id_to_digit.get(first_tok_id)
-        argmax_digit = DIGITS[int(restricted_probs[i].argmax())]
+        argmax_digit = scoring_values[int(restricted_probs[i].argmax())]
         match = first_tok_digit == argmax_digit
         n_mismatch += int(not match)
         n_unrecognized += int(first_tok_digit is None)
         n_low_mass += int(mass[i].item() < 0.9)
-        probs_str = " ".join(f"{restricted_probs[i, j].item():.3f}" for j in range(4))
+        probs_str = " ".join(f"{restricted_probs[i, j].item():.3f}" for j in range(len(scoring_values)))
         pair_str = f"{id1}-{id2}"
         print(
             f"{direction:5} {pair_str:10} {repr(raw_text):22} {first_tok_id:13} "
@@ -176,6 +182,12 @@ def run_test_mode(args, model, tok, proc, spec, pairs_df, device):
 def main():
     args = parse_command_line_args()
 
+    scoring_values_id = args.scoring_values
+    if scoring_values_id == "digits":
+        scoring_values = DIGITS
+    else:
+        raise NotImplementedError()
+    
     gen_df = load_generation_df(args)
     pairs_df = build_pairs(gen_df)
 
@@ -194,42 +206,36 @@ def main():
             f"/ '{args.generation_prompt_version}' | testing {args.n_test} pairs "
             f"({2 * args.n_test} directional prompts)"
         )
-        run_test_mode(args, model, tok, proc, spec, pairs_df, device)
+        run_test_mode(args, model, tok, proc, spec, pairs_df, device, scoring_values=scoring_values)
         return
 
-    output_path = resolve_output_path(args)
+    output_path = resolve_output_path(args, script_name="prob")
     effective_batch_size = max(1, args.batch_size // spec.batch_size_divide)
     print(f"Judge: {spec.name} (key '{args.judge_model_id}') | effective batch size: {effective_batch_size} | device: {device}")
 
     entries = build_direction_prompts(pairs_df, args.scoring_prompt_version)
     prompts = [e[3] for e in entries]
 
-    digit_token_aliases = resolve_digit_token_aliases(tok)
+    digit_token_aliases = resolve_digit_token_aliases(tok, scoring_values=scoring_values)
 
     messages_list = [build_messages(p, spec, want_thinking=False) for p in prompts]
     texts = [apply_chat_template_safe(tok, m, spec, want_thinking=False) for m in messages_list]
 
     n = len(texts)
-    all_probs = torch.zeros((n, 4))
+    all_probs = torch.zeros((n, len(scoring_values)))
     all_mass = torch.zeros(n)
     indices = list(range(n))
 
     def save_progress():
         probs_np = all_probs.numpy()
         mass_np = all_mass.numpy()
-        soft_score = probs_np @ np.array([1, 2, 3, 4])
-        argmax_score = probs_np.argmax(axis=1) + 1
         entropy = -(probs_np * np.log(np.clip(probs_np, 1e-12, 1.0))).sum(axis=1)
 
-        for k, d in enumerate(DIGITS):
+        for k, d in enumerate(scoring_values):
             pairs_df[f"prob_{d}_1to2"] = probs_np[0::2, k]
             pairs_df[f"prob_{d}_2to1"] = probs_np[1::2, k]
         pairs_df["mass_on_digits_1to2"] = mass_np[0::2]
         pairs_df["mass_on_digits_2to1"] = mass_np[1::2]
-        pairs_df["soft_score_1to2"] = soft_score[0::2]
-        pairs_df["soft_score_2to1"] = soft_score[1::2]
-        pairs_df["generated_score_1to2"] = argmax_score[0::2]
-        pairs_df["generated_score_2to1"] = argmax_score[1::2]
         pairs_df["entropy_1to2"] = entropy[0::2]
         pairs_df["entropy_2to1"] = entropy[1::2]
         pairs_df["judge_model_used"] = spec.name
@@ -239,12 +245,11 @@ def main():
 
     for batch_idx in tqdm(list(batch_iterable(indices, effective_batch_size)), desc=f"Scoring ({args.judge_model_id})"):
         batch_texts = [texts[i] for i in batch_idx]
-        probs, mass = score_batch(model, tok, proc, spec, batch_texts, digit_token_aliases, device)
+        probs, mass = score_batch(model, tok, proc, spec, batch_texts, digit_token_aliases, device, scoring_values=scoring_values)
         for j, i in enumerate(batch_idx):
             all_probs[i] = probs[j]
             all_mass[i] = mass[j]
-        # Incremental save in case of crash on long runs
-        save_progress()
+       
 
     save_progress()
     print(f"Saved {len(pairs_df)} pairs (with probability-based scores in both directions) to {output_path}")
@@ -252,7 +257,7 @@ def main():
     mean_mass = all_mass.mean().item()
     if mean_mass < 0.9:
         print(
-            f"[warn] mean probability mass on the 4 digit-alias tokens across all directional "
+            f"[warn] mean probability mass on the {len(scoring_values)} digit-alias tokens across all directional "
             f"prompts was only {mean_mass:.3f}. This judge may not be reliably answering "
             f"with a bare digit as the first token -- re-run with --test to inspect."
         )
