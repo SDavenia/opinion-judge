@@ -3,11 +3,9 @@ import os
 import argparse
 import torch
 from tqdm import tqdm
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoProcessor, Gemma3ForConditionalGeneration
-from dataclasses import dataclass, field
 
 from utils.models_utils import REGISTRY, load_model
-from utils.prompts_utils import build_messages, apply_chat_template_safe
+from utils.prompts_utils import build_messages, apply_chat_template_safe, GENERATION_PROMPTS
 from utils.generation_utils import batch_iterable
 
 HIGH_STAKE_SITUATIONS = [
@@ -38,10 +36,12 @@ def parse_command_line_args():
     parser.add_argument("--output_path", type=str, default="data/valueprism_generations.csv", help="Where to save results")
     parser.add_argument("--limit", action="store_true", default=None, help="Optional row limit for debugging")
     parser.add_argument("--final_run", action="store_true", help="If set, will overwrite the save and output to the final file")
+    parser.add_argument("--generation_prompt_version", type=str, default="base", choices=list(GENERATION_PROMPTS.keys()), help="Version of the prompt to use")
+
     return parser.parse_args()
 
 
-def prepare_generation_prompt(row):
+def prepare_generation_prompt(row, prompt_version):
     situation = row['situation']
     value = row['text']
     valence = row['valence']
@@ -54,19 +54,13 @@ def prepare_generation_prompt(row):
     else:  # Either
         stance_instruction = f"Write an opinion that highlights the AMBIGUITY, CONDITIONALITY, or internal tension of the situation regarding the principle of {value}."
 
-    prompt = f"""You are a precise text generation engine for an NLP evaluation dataset.
-    Situation: {situation}
-    Moral Principle: {value}
-    Target Relationship to Situation: {valence}
-    Core Rationale: {explanation}
-    Task:
-    {stance_instruction}
-
-    Constraints:
-    1. The output must be exactly 2-3 sentences long.
-    2. Write in a natural, first-person or third-person argumentative tone (as if written by a human expressing a genuine opinion).
-    3. Do not explicitly mention the words "Valence", "Core Rationale", or quote the instructions. Integrate the Core Rationale seamlessly into the stance.
-    Output only the opinion text."""
+    prompt = GENERATION_PROMPTS[prompt_version].format(
+        situation=situation,
+        value=value,
+        valence=valence,
+        explanation=explanation,
+        stance_instruction=stance_instruction
+    )
     return prompt
 
 
@@ -87,7 +81,7 @@ def main():
     effective_batch_size = max(1, args.batch_size // spec.batch_size_divide)
     print(f"Model: {spec.name} (key '{args.model_id}') | effective batch size: {effective_batch_size} | device: {device}")
 
-    prompts = [prepare_generation_prompt(row) for _, row in valueprism_df.iterrows()]
+    prompts = [prepare_generation_prompt(row, args.generation_prompt_version) for _, row in valueprism_df.iterrows()]
     messages_list = [build_messages(p, spec, want_thinking=False) for p in prompts]
     generations = [None] * len(prompts)
     indices = list(range(len(prompts)))
@@ -135,7 +129,7 @@ def main():
     if args.final_run:
         output_path = args.output_path
     else:
-        output_path = f"{args.output_path.rstrip('.csv')}_{args.model_id}{'_limit' if args.limit else ''}.csv"
+        output_path = f"{args.output_path.rstrip('.csv')}_{args.model_id}_{args.generation_prompt_version}{'_limit' if args.limit else ''}.csv"
     valueprism_df.to_csv(output_path, index=False)
     print(f"Saved {len(valueprism_df)} generations to {output_path}")
 

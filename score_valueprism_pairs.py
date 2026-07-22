@@ -1,130 +1,67 @@
-import pandas as pd
-import os
 import argparse
+import pandas as pd
 import torch
 from tqdm import tqdm
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoProcessor, Gemma3ForConditionalGeneration, Qwen2_5_VLForConditionalGeneration
-from dataclasses import dataclass, field
 
 from utils.models_utils import REGISTRY, load_model
 from utils.prompts_utils import build_messages, apply_chat_template_safe
 from utils.generation_utils import batch_iterable
+from utils.scoring_utils import (
+    add_common_args,
+    resolve_output_path,
+    load_generation_df,
+    build_pairs,
+    build_direction_prompts,
+    tokenize_for_scoring,
+)
 
-PROMPTS = {
-    "base": """You are an impartial evaluator.
-Assess how well the second opinion aligns with the first in the following situation.
-
-Situation: {situation}
-First opinion: {first_opinion}
-Second opinion: {second_opinion}
-
-Return only a score from 1 to 4.""",
-
-    "base_nofluency": """You are an impartial evaluator
-Assess how well the second opinion (Opinion B) aligns with the first (Opinion A) in the following situation.
-Rate how aligned they are in terms of viewpoint, on a scale of [1-4].
-Do not consider writing quality, length, or fluency, only the similarity of position and underlying reasoning.
-
-Situation: {situation}
-Opinion A: {first_opinion}
-Opinion B: {second_opinion}
-
-Score:"""
-}
 
 def parse_command_line_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--model_id", type=str, required=True,
-        choices=list(REGISTRY.keys()),
-        help="Registry key for the model to use (see REGISTRY dict)",
-    )
-    parser.add_argument("--batch_size", type=int, default=32, help="Global batch size before per-model scaling")
+    add_common_args(parser)
     parser.add_argument("--max_new_tokens", type=int, default=5, help="Max new tokens to generate per opinion")
-    parser.add_argument("--output_dir", type=str, default="output_scores", help="Where to save results")
-    parser.add_argument("--limit", action="store_true", default=None, help="Optional row limit for debugging")
-    parser.add_argument("--final_run", action="store_true", help="If set, will overwrite the save and output to the final file")
-    parser.add_argument("--prompt_version", type=str, default="base", choices=list(PROMPTS.keys()), help="Version of the prompt to use")
     return parser.parse_args()
 
 
-def prepare_evaluator_prompt(situation, first_opinion, second_opinion, prompt_version):
-    """
-    Build the evaluator prompt. Caller decides which opinion plays the role
-    of "first" and "second" so this can be used for both the 1->2 and 2->1
-    directions.
-    """
-    prompt = PROMPTS[prompt_version].format(situation=situation, first_opinion=first_opinion, second_opinion=second_opinion)
-
-    return prompt
-
-def assign_expected_score(row):
-    if row['valence_1'] == row['valence_2']:
-        if row["text_1"] == row["text_2"]:
-            return 4
-        else:
-            return 3
-    elif row['valence_1'] == "Either" or row['valence_2'] == "Either":
-        return 2
-    else:
-        return 1
-
 def main():
     args = parse_command_line_args()
-    valueprism_generations_df = pd.read_csv(f"data/valueprism_generation_{args.model_id}{('_limit' if args.limit else '')}.csv")
 
-    spec = REGISTRY[args.model_id]
+    gen_df = load_generation_df(args)
+    pairs_df = build_pairs(gen_df)
+
+    spec = REGISTRY[args.judge_model_id]
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model, proc = load_model(spec)
     tok = proc.tokenizer if spec.is_vlm else proc
+    if tok.pad_token_id is None:
+        tok.pad_token = tok.eos_token
 
-    df_copy = valueprism_generations_df.copy().reset_index().rename(columns={"index": "id"})
-    pairs_df = (
-        df_copy.merge(df_copy, on="situation", suffixes=("_1", "_2"))
-        .query("id_1 < id_2")
-        .reset_index(drop=True)
-    )
-    
-    pairs_df['expected_score'] = pairs_df.apply(assign_expected_score, axis=1)
-
-    if args.final_run:
-        output_path = f"{args.output_dir}/{args.model_id}_{args.prompt_version}.csv"
-    else:
-        output_path = f"{args.output_dir}/{args.model_id}_{args.prompt_version}_limit.csv"
-    os.makedirs(args.output_dir, exist_ok=True)
-
+    output_path = resolve_output_path(args)
     effective_batch_size = max(1, args.batch_size // spec.batch_size_divide)
-    print(f"Model: {spec.name} (key '{args.model_id}') | effective batch size: {effective_batch_size} | device: {device}")
+    print(f"Judge: {spec.name} (key '{args.judge_model_id}') | effective batch size: {effective_batch_size} | device: {device}")
 
-    # Build both directions: for each pair, one prompt scoring 1->2 (opinion_1
-    # as "first", opinion_2 as "second") and one scoring 2->1 (reversed).
-    # These are interleaved as [row0_1to2, row0_2to1, row1_1to2, row1_2to1, ...]
-    # so a pair's two directions land in adjacent batch slots.
-    prompts = []
-    for _, row in pairs_df.iterrows():
-        prompts.append(prepare_evaluator_prompt(row['situation'], row['generated_opinion_1'], row['generated_opinion_2'], args.prompt_version))
-        prompts.append(prepare_evaluator_prompt(row['situation'], row['generated_opinion_2'], row['generated_opinion_1'], args.prompt_version))
+    entries = build_direction_prompts(pairs_df, args.scoring_prompt_version) # List of tuples: (direction, id1, id2, prompt)
+    prompts = [e[3] for e in entries]
 
     messages_list = [build_messages(p, spec, want_thinking=False) for p in prompts]
-    generations = [None] * len(prompts)
-    indices = list(range(len(prompts)))
+    texts = [apply_chat_template_safe(tok, m, spec, want_thinking=False) for m in messages_list]
+
+    generations = [None] * len(texts)
+    indices = list(range(len(texts)))
 
     def save_progress():
         # Even indices are the 1->2 direction, odd indices are 2->1.
         pairs_df["generated_score_1to2"] = pd.Series(generations[0::2])
         pairs_df["generated_score_2to1"] = pd.Series(generations[1::2])
+        pairs_df["judge_model_used"] = spec.name
+        pairs_df["generation_model_id"] = args.generation_model_id
+        pairs_df["generation_prompt_version"] = args.generation_prompt_version
         pairs_df.to_csv(output_path, index=False)
 
-    for batch_idx in tqdm(list(batch_iterable(indices, effective_batch_size)), desc=f"Generating ({args.model_id})"):
-        batch_messages = [messages_list[i] for i in batch_idx]
-        batch_texts = [apply_chat_template_safe(tok, m, spec, want_thinking=False) for m in batch_messages]
-
-        if spec.is_vlm:
-            # Text-only call: no images passed, so the processor just does tokenization + padding.
-            inputs = proc(text=batch_texts, return_tensors="pt", padding=True, truncation=True).to(device)
-        else:
-            inputs = tok(batch_texts, return_tensors="pt", padding=True, truncation=True).to(device)
+    for batch_idx in tqdm(list(batch_iterable(indices, effective_batch_size)), desc=f"Generating ({args.judge_model_id})"):
+        batch_texts = [texts[i] for i in batch_idx]
+        inputs = tokenize_for_scoring(tok, proc, spec, batch_texts, device)
 
         # If limit is specified, print the first input fully for debugging
         if args.limit and batch_idx[0] == 0:
@@ -135,9 +72,7 @@ def main():
             output_ids = model.generate(
                 **inputs,
                 max_new_tokens=args.max_new_tokens,
-                do_sample=True,
-                temperature=0.8,
-                top_p=0.9,
+                do_sample=False,
                 pad_token_id=tok.pad_token_id,
             )
 
@@ -148,13 +83,14 @@ def main():
         for i, text in zip(batch_idx, decoded):
             generations[i] = text.strip()
 
-        # Incremental save in case of crash on long runs
-        save_progress()
-
     save_progress()
-    pairs_df["model_used"] = spec.name
-    pairs_df.to_csv(output_path, index=False)
     print(f"Saved {len(pairs_df)} pairs (with 1->2 and 2->1 scores) to {output_path}")
+
+    valid = {"1", "2", "3", "4"}
+    compliant = pairs_df["generated_score_1to2"].isin(valid) & pairs_df["generated_score_2to1"].isin(valid)
+    print(f"Clean single-digit compliance: {compliant.mean():.1%} of pairs "
+          f"({(~compliant).sum()} pairs had a non-digit or malformed response in at "
+          f"least one direction).")
 
     # Report memory usage
     if torch.cuda.is_available():
@@ -168,4 +104,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
