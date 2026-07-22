@@ -119,7 +119,7 @@ def add_common_args(parser):
         help="Registry key for the model used as the LLM-as-judge (scorer).",
     )
     parser.add_argument(
-        "--generation_model_id", type=str, required=True, choices=list(REGISTRY.keys()),
+        "--generation_model_id", type=str, choices=list(REGISTRY.keys()),
         help="Registry key for the model whose generated opinions to load and score.",
     )
     parser.add_argument(

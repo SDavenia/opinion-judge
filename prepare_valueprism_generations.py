@@ -35,8 +35,9 @@ def parse_command_line_args():
     parser.add_argument("--max_new_tokens", type=int, default=150, help="Max new tokens to generate per opinion")
     parser.add_argument("--output_path", type=str, default="data/valueprism_generations.csv", help="Where to save results")
     parser.add_argument("--limit", action="store_true", default=None, help="Optional row limit for debugging")
-    parser.add_argument("--final_run", action="store_true", help="If set, will overwrite the save and output to the final file")
     parser.add_argument("--generation_prompt_version", type=str, default="base", choices=list(GENERATION_PROMPTS.keys()), help="Version of the prompt to use")
+    parser.add_argument("--final_run", action="store_true", help="If set, will overwrite the save and output to the final file")
+
 
     return parser.parse_args()
 
