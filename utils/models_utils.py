@@ -38,20 +38,27 @@ REGISTRY = {
         is_vlm=False, supports_system_role=True,
         batch_size_divide=2,
     ),
+    "qwen2.5-72b": ModelSpec(
+        "Qwen/Qwen2.5-72B-Instruct",
+        AutoModelForCausalLM, AutoTokenizer,
+        is_vlm=False, supports_system_role=True,
+        batch_size_divide=2,
+    ),
+    "mistral-24b": ModelSpec(
+        "mistralai/Mistral-Small-24B-Instruct-2501",
+        AutoModelForCausalLM, AutoTokenizer,
+        is_vlm=False, supports_system_role=True,
+        proc_kwargs={"fix_mistral_regex": True},
+        batch_size_divide=1,
+    ),
+
+    # For small trials
     "llama-3.1-8b": ModelSpec(
         "meta-llama/Llama-3.1-8B-Instruct",
         AutoModelForCausalLM, AutoTokenizer,
         is_vlm=False, supports_system_role=True,
         batch_size_divide=1,
-    ),
-     "nvidia-nemotron-nano-9b": ModelSpec(
-        "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
-        AutoModelForCausalLM, AutoTokenizer,
-        is_vlm=False, supports_system_role=True,
-        thinking_control="system_flag",   # controlled via "/think" or "/no_think" in a system message
-        load_kwargs={"attn_implementation": "eager"},
-        batch_size_divide=1,
-    ),
+    )
 }
 
 
