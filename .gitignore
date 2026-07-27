@@ -16,3 +16,14 @@ output_scores/
 sbatch_run/
 sbatch_output/
 commands
+
+# Misc view scripts
+view_scores.ipynb
+
+# platforms for annotation
+platforms/
+
+# misc
+prepare_merged_data_for_ranking.ipynb
+merged_*.csv
+show_model_embedded_opinion.ipynb
