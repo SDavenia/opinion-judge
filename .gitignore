@@ -11,6 +11,8 @@ __pycache__/
 # data
 data/
 output_scores/
+model_alignment/
+model_alignment_probability/
 
 # SLURM Runs
 sbatch_run/

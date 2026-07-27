@@ -104,6 +104,7 @@ def load_model(spec: ModelSpec):
             print(f"Warning: could not apply mistral regex fix, continuing with fast tokenizer: {e}")
 
     tok.padding_side = "left"
+    print(f"Warning: applying left padding, if you want to do finetuning change this.")
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
