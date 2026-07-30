@@ -8,7 +8,11 @@ from utils.models_utils import load_model, REGISTRY
 from utils.prompts_utils import build_messages, apply_chat_template_safe
 from utils.generation_utils import batch_iterable
 import re
+import os
 
+
+
+PATH_VALUE_PRISM = "data/valueprism_data.csv"
 
 def parse_command_line_args():
     parser = argparse.ArgumentParser()
@@ -18,6 +22,8 @@ def parse_command_line_args():
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for generation")
     parser.add_argument("--generation_prompt_version", type=str, default="impartial_evaluator", help="Version of the prompt to use")
     parser.add_argument("--n_samples", type=int, default=5, help="Number of times to repeat the generation for each situation")
+    parser.add_argument("--situations", type=str, default="high_stake", help="What situations typology to run, if == 'high_stake' only HIGH_STAKES situations are considered. if == 'first_n' only the first n situations will be run.")
+    parser.add_argument("--n_situations", type=int, default=None, help="Parameter for first_n")
     return parser.parse_args()
 
 
@@ -82,18 +88,32 @@ def parse_generations(generations):
             parsed_results.append(None)
     return parsed_results
 
+def get_situations(args):
+
+    if args.situations == "high_stake":
+        return HIGH_STAKE_SITUATIONS
+    elif args.situations == "first_n":
+        if args.n_situations is None or args.n_situations <= 0:
+            raise ValueError(f"When using 'first_n' situations, you have to set 'n_situations, meanwhile you set: {args.n_situations}")
+
+        value_prism_df = pd.read_csv(PATH_VALUE_PRISM, encoding="utf-8")
+        if args.n_situations > len(value_prism_df):
+            raise ValueError(f"Requested n_situations ({args.n_situations}) is greater than the number of available situations ({len(value_prism_df)}) in the dataset.")
+        return value_prism_df['situation'].head(args.n_situations).tolist()
+    else:
+        raise ValueError(f"Invalid situations argument: {args.situations}. Must be 'high_stake' or 'first_n'.")
 def main():
     args = parse_command_line_args()
     spec = REGISTRY[args.model_id]
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
+    situations = get_situations(args)
     model, proc = load_model(spec)
     tok = proc.tokenizer if spec.is_vlm else proc
 
     effective_batch_size = max(1, args.batch_size // spec.batch_size_divide)
     print(f"Model: {spec.name} (key '{args.model_id}') | effective batch size: {effective_batch_size} | device: {device}")
 
-    situations, prompts = [[situation] * args.n_samples for situation in HIGH_STAKE_SITUATIONS], [prepare_distribution_prompt(situation, args.generation_prompt_version, args.n_samples) for situation in HIGH_STAKE_SITUATIONS]
+    situations, prompts = [[situation] * args.n_samples for situation in situations], [prepare_distribution_prompt(situation, args.generation_prompt_version, args.n_samples) for situation in situations]
     # Flatten the lists of situations and prompts
     situations = [item for sublist in situations for item in sublist]
     prompts = [item for sublist in prompts for item in sublist]
@@ -141,10 +161,14 @@ def main():
         "generation": generations,
         "parsed_evaluation": parsed_generations
     })
-    df.to_csv(f"model_alignment/{args.model_id}_generations.csv", index=False)
+    path_csv = f"model_alignment/{args.model_id}_generations.csv"
+    print(f"Saving generations and parsed evaluations to {path_csv}")
+    #create the directory if it doesn't exist
+    os.makedirs(os.path.dirname(path_csv), exist_ok=True)
+    df.to_csv(f"model_alignment/{args.model_id}_generations.csv", encoding="utf-8", index=False)
     # Compute distribution for each situation (p(ACCEPTABLE) and p(UNACCEPTABLE))
     situation_distribution = {}
-    for situation in HIGH_STAKE_SITUATIONS:
+    for situation in situations:
         # Get all evaluations for this situation
         evaluations = [parsed_generations[i] for i in range(len(situations)) if situations[i] == situation]
         
