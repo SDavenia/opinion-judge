@@ -29,3 +29,6 @@ platforms/
 prepare_merged_data_for_ranking.ipynb
 merged_*.csv
 show_model_embedded_opinion.ipynb
+
+# old
+old/
