@@ -1,12 +1,15 @@
 import argparse
 import json
+import os
 import torch
 from tqdm import tqdm
 from utils.models_utils import load_model, REGISTRY
-
+import pandas as pd
 from utils.prompts_utils import build_messages, apply_chat_template_safe
 from utils.generation_utils import batch_iterable
 import torch.nn.functional as F
+
+PATH_VALUE_PRISM = "data/valueprism_data.csv"
 
 
 def parse_command_line_args():
@@ -14,6 +17,8 @@ def parse_command_line_args():
     parser.add_argument("--model_id", type=str, default="Llama-3.2-1b", help="Model ID to use for generation")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size for generation")
     parser.add_argument("--generation_prompt_version", type=str, default="impartial_evaluator", help="Version of the prompt to use")
+    parser.add_argument("--situations", type=str, default="high_stake", help="Type of situations to use")
+    parser.add_argument("--n_situations", type=int, help="Number of situations to use (for 'first_n' option)")
     return parser.parse_args()
 
 
@@ -90,86 +95,92 @@ LABELS = {
 
 def prepare_distribution_prompt(situation, prompt_version):
     return DISTRIBUTION_PROMPTS[prompt_version].format(situation=situation)
-
-def label_logprob_joint(model, tok, prefix_text, label_str, device):
+def batch_label_logprobs(model, tok, prefix_texts, label_str, device):
     """
-    Tokenizes `prefix_text + label_str` as a single string (so there is no
-    prefix/label boundary tokenization mismatch), then finds which tokens
-    correspond to the label via character offsets and sums their log-probs.
+    Batched teacher-forced scoring of `label_str` appended to each prefix in
+    `prefix_texts`. Returns a list of total log-probs (one per row), in the
+    same order as prefix_texts.
+
+    Tokenizes prefix+label jointly per row (avoids prefix/label boundary
+    tokenization mismatches), pads the batch on the RIGHT (safe for causal
+    attention: padded tokens are attended to by nobody, so real-token logits
+    are identical to the unpadded case and default position_ids stay valid),
+    then uses character offsets to find where each row's label starts.
     """
-    full_text = prefix_text + label_str
+    full_texts = [p + label_str for p in prefix_texts]
 
-    enc = tok(
-        full_text,
-        return_tensors="pt",
-        return_offsets_mapping=True,
-        add_special_tokens=True,  # the template by defaults adds them.
-    )
-    full_ids = enc["input_ids"].to(device)
-    attn_mask = torch.ones_like(full_ids)
-    offsets = enc["offset_mapping"][0].tolist()  # list of (start_char, end_char)
-
-    # Character index where the label begins in full_text
-    label_start_char = len(prefix_text)
-
-    # Find the first token whose span starts at or after label_start_char.
-    # (Special tokens typically have offset (0, 0);
-    label_token_start = None
-    for i, (s, e) in enumerate(offsets):
-        if s >= label_start_char and e > s:  # e>s excludes zero-width special tokens
-            label_token_start = i
-            break
-
-    if label_token_start is None:
-        raise ValueError(
-            f"Could not locate label tokens for {label_str!r} in joint tokenization. "
-            f"offsets={offsets}, full_text={full_text!r}"
+    # Force right-padding for this manual forward pass regardless of the
+    # tokenizer's configured default, since we're not using .generate().
+    original_padding_side = tok.padding_side
+    tok.padding_side = "right"
+    try:
+        enc = tok(
+            full_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            return_offsets_mapping=True,
+            add_special_tokens=True,
         )
+    finally:
+        tok.padding_side = original_padding_side
 
-    label_ids = full_ids[0, label_token_start:].tolist()
-
-    with torch.no_grad():
-        out = model(input_ids=full_ids, attention_mask=attn_mask)
-
-    logits = out.logits[0]
-
-    logprob = 0.0
-    for k, tid in enumerate(label_ids):
-        pos = label_token_start - 1 + k  # position predicting this token
-        step_logits = logits[pos]
-        step_logprob = F.log_softmax(step_logits, dim=-1)[tid]
-        logprob += step_logprob.item()
-
-    return logprob
-
-
-def label_logprob(model, tok, prefix_ids, attn_mask, label_str, device):
-    """
-    Teacher-forces `label_str` right after prefix_ids and returns its total
-    log-prob (sum of per-token log-probs).
-    prefix_ids: (1, seq_len) input ids for this single example
-    attn_mask: (1, seq_len)
-    """
-    label_ids = tok.encode(label_str, add_special_tokens=False)
-    label_ids_t = torch.tensor([label_ids], device=device)
-
-    full_ids = torch.cat([prefix_ids, label_ids_t], dim=1)
-    full_mask = torch.cat([attn_mask, torch.ones_like(label_ids_t)], dim=1)
+    input_ids = enc["input_ids"].to(device)
+    attention_mask = enc["attention_mask"].to(device)
+    offsets_batch = enc["offset_mapping"]  # (batch, seq_len, 2), still on CPU
 
     with torch.no_grad():
-        out = model(input_ids=full_ids, attention_mask=full_mask)
+        out = model(input_ids=input_ids, attention_mask=attention_mask)
+    logits = out.logits  # (batch, seq_len, vocab)
 
-    logits = out.logits[0]  # (seq_len_total, vocab)
-    prefix_len = prefix_ids.shape[1]
+    logprobs = []
+    for row in range(len(full_texts)):
+        label_start_char = len(prefix_texts[row])
+        offsets = offsets_batch[row].tolist()
 
-    logprob = 0.0
-    for k, tid in enumerate(label_ids):
-        # logits at position (prefix_len - 1 + k) predict token at (prefix_len + k)
-        step_logits = logits[prefix_len - 1 + k]
-        step_logprob = F.log_softmax(step_logits, dim=-1)[tid]
-        logprob += step_logprob.item()
+        label_token_start = None
+        for i, (s, e) in enumerate(offsets):
+            if s >= label_start_char and e > s:  # e>s excludes zero-width special/pad tokens
+                label_token_start = i
+                break
 
-    return logprob
+        if label_token_start is None:
+            raise ValueError(
+                f"Could not locate label tokens for {label_str!r} in row {row}. "
+                f"offsets={offsets}, full_text={full_texts[row]!r}"
+            )
+
+        real_len = int(attention_mask[row].sum().item())
+        label_ids = input_ids[row, label_token_start:real_len].tolist()
+
+        logprob = 0.0
+        for k, tid in enumerate(label_ids):
+            pos = label_token_start - 1 + k  # position predicting this token
+            step_logprob = F.log_softmax(logits[row, pos], dim=-1)[tid]
+            logprob += step_logprob.item()
+
+        logprobs.append(logprob)
+
+    return logprobs
+
+
+
+def get_situations(args):
+
+    if args.situations == "high_stake":
+        return HIGH_STAKE_SITUATIONS
+    elif args.situations == "first_n":
+        if args.n_situations is None or args.n_situations <= 0:
+            raise ValueError(f"When using 'first_n' situations, you have to set 'n_situations, meanwhile you set: {args.n_situations}")
+
+        value_prism_df = pd.read_csv(PATH_VALUE_PRISM, encoding="utf-8")
+        if args.n_situations > len(value_prism_df):
+            raise ValueError(f"Requested n_situations ({args.n_situations}) is greater than the number of available situations ({len(value_prism_df)}) in the dataset.")
+        # we select the first n_situatuations (no duplicates) and return them as a list
+
+        return value_prism_df["situation"].drop_duplicates().head(args.n_situations).tolist()
+    else:
+        raise ValueError(f"Invalid situations argument: {args.situations}. Must be 'high_stake' or 'first_n'.")
 
 def main():
     args = parse_command_line_args()
@@ -187,7 +198,7 @@ def main():
         enc = tok.encode(variant, add_special_tokens=False)
         print(f"{variant!r} -> ids={enc} tokens={tok.convert_ids_to_tokens(enc)}")
 
-    situations = HIGH_STAKE_SITUATIONS
+    situations = get_situations(args)
     prompts = [prepare_distribution_prompt(s, args.generation_prompt_version) for s in situations]
     messages_list = [build_messages(p, spec, want_thinking=False) for p in prompts]
 
@@ -206,23 +217,12 @@ def main():
             print("First input batch (for debugging):")
             print(batch_texts)
 
-        # Per-example scoring: each situation needs its own prefix + two label
-        # continuations, so we don't batch the forward pass across situations here.
+        lp_acc_batch = batch_label_logprobs(model, tok, batch_texts, LABELS["ACCEPTABLE"], device)
+        lp_unacc_batch = batch_label_logprobs(model, tok, batch_texts, LABELS["UNACCEPTABLE"], device)
+
         for row_i, i in enumerate(batch_idx):
-            text = batch_texts[row_i]
-            if spec.is_vlm:
-                enc = proc(text=[text], return_tensors="pt", truncation=True).to(device)
-            else:
-                enc = tok([text], return_tensors="pt", truncation=True).to(device)
-
-            prefix_ids = enc["input_ids"]
-            attn_mask = enc["attention_mask"]
-
-            lp_acc = label_logprob(model, tok, prefix_ids, attn_mask, LABELS["ACCEPTABLE"], device)
-            lp_unacc = label_logprob(model, tok, prefix_ids, attn_mask, LABELS["UNACCEPTABLE"], device)
-
-            lp_acc_joint = label_logprob_joint(model, tok, text, LABELS["ACCEPTABLE"], device)
-            lp_unacc_joint = label_logprob_joint(model, tok, text, LABELS["UNACCEPTABLE"], device)
+            lp_acc = lp_acc_batch[row_i]
+            lp_unacc = lp_unacc_batch[row_i]
 
             # Normalize into a proper 2-way distribution over just these two labels.
             m = max(lp_acc, lp_unacc)
@@ -230,22 +230,19 @@ def main():
             p_unacc = torch.exp(torch.tensor(lp_unacc - m))
             total = p_acc + p_unacc
 
-            m_joint = max(lp_acc_joint, lp_unacc_joint)
-            p_acc_joint = torch.exp(torch.tensor(lp_acc_joint - m_joint))
-            p_unacc_joint = torch.exp(torch.tensor(lp_unacc_joint - m_joint))
-            total_joint = p_acc_joint + p_unacc_joint
-
             results[i] = {
                 "situation": situations[i],
                 "p_acceptable": (p_acc / total).item(),
                 "p_unacceptable": (p_unacc / total).item(),
-                "p_acceptable_joint": (p_acc_joint / total_joint).item(),
-                "p_unacceptable_joint": (p_unacc_joint / total_joint).item(),
             }
 
 
-    with open(f"model_alignment_probability/{args.model_id}.json", "w") as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
+    path_json = f"model_alignment_probability/{args.model_id}.json"
+    print(f"Saving results to {path_json}")
+    #create the directory if it doesn't exist
+    os.makedirs(os.path.dirname(path_json), exist_ok=True)
+    with open(f"model_alignment_probability/{args.model_id}.json", "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2, ensure_ascii=False,)
 
 
 if __name__ == "__main__":
