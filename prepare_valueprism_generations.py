@@ -37,7 +37,7 @@ def parse_command_line_args():
     parser.add_argument("--limit", action="store_true", default=None, help="Optional row limit for debugging")
     parser.add_argument("--generation_prompt_version", type=str, default="base", choices=list(GENERATION_PROMPTS.keys()), help="Version of the prompt to use")
     parser.add_argument("--final_run", action="store_true", help="If set, will overwrite the save and output to the final file")
-
+    parser.add_argument("--num_situations", type=int, default=None, help="Instead of using only high stake situations, num_situations are extracted from value prism dataset. ")
 
     return parser.parse_args()
 
@@ -69,9 +69,22 @@ def main():
     args = parse_command_line_args()
     valueprism_df = pd.read_csv("data/valueprism_data.csv")
 
+    if not args.limit and args.num_situations is None:
+        raise ValueError("You must specify either --limit or --num_situations to control the number of rows processed.")
+
     if args.limit:
         # Keep only the rows in high-stake situations
         valueprism_df = valueprism_df[valueprism_df["situation"].isin(HIGH_STAKE_SITUATIONS)].copy()
+    else:
+        
+        # Randomly sample num_situations from the dataset
+        # we extract num_situations from the dataset ('situation' is a repetead field, so do a set)
+        # afterwards we select all rows with those situations
+        random_situations = valueprism_df['situation'].drop_duplicates().sample(n=args.num_situations, random_state=42)
+        valueprism_df = valueprism_df[valueprism_df['situation'].isin(random_situations)].copy()
+
+    # Reset to a clean 0..n-1 index so later slicing lines up correctly
+    valueprism_df = valueprism_df.reset_index(drop=True)
 
     spec = REGISTRY[args.model_id]
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -87,6 +100,15 @@ def main():
     generations = [None] * len(prompts)
     indices = list(range(len(prompts)))
 
+    # Pre-create the column so .iloc assignment inside the loop works
+    valueprism_df["generated_opinion"] = pd.NA
+
+    os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
+    if args.final_run:
+        output_path = args.output_path
+    else:
+        output_path = f"{args.output_path.rstrip('.csv')}_{args.model_id}_{args.generation_prompt_version}{'_limit' if args.limit else ''}.csv"
+        
     for batch_idx in tqdm(list(batch_iterable(indices, effective_batch_size)), desc=f"Generating ({args.model_id})"):
         batch_messages = [messages_list[i] for i in batch_idx]
         batch_texts = [apply_chat_template_safe(tok, m, spec, want_thinking=False) for m in batch_messages]
@@ -119,18 +141,14 @@ def main():
         for i, text in zip(batch_idx, decoded):
             generations[i] = text.strip()
 
-        # Incremental save in case of crash on long runs
-        valueprism_df.loc[:len(generations) - 1, "generated_opinion"] = pd.Series(generations)
-        os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
-        valueprism_df.to_csv(args.output_path, index=False)
+        # # Incremental save in case of crash on long runs
+        # valueprism_df.iloc[:len(generations), valueprism_df.columns.get_loc("generated_opinion")] = pd.Series(generations)
+        # os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
+        # valueprism_df.to_csv(output_path, index=False)
 
     valueprism_df["generated_opinion"] = generations
     valueprism_df["model_used"] = spec.name
-    os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
-    if args.final_run:
-        output_path = args.output_path
-    else:
-        output_path = f"{args.output_path.rstrip('.csv')}_{args.model_id}_{args.generation_prompt_version}{'_limit' if args.limit else ''}.csv"
+    
     valueprism_df.to_csv(output_path, index=False)
     print(f"Saved {len(valueprism_df)} generations to {output_path}")
 
