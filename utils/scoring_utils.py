@@ -131,6 +131,7 @@ def add_common_args(parser):
         "--scoring_prompt_version", type=str, default="base", choices=list(PROMPTS.keys()),
         help="Version of the judge prompt to use.",
     )
+    parser.add_argument("--generation_csv_path", type=str, default=None, help="Optional path to a CSV of generated opinions to score (if not using the default path).")
     parser.add_argument("--batch_size", type=int, default=32, help="Global batch size before per-model scaling")
     parser.add_argument("--output_dir", type=str, default="output_scores", help="Where to save results")
     parser.add_argument("--limit", action="store_true", default=None, help="Optional row limit for debugging")
@@ -146,10 +147,8 @@ def resolve_output_path(args,
     if args.final_run:
         path = f"{args.output_dir}/{script_name}/{args.judge_model_id}_{args.scoring_prompt_version}.csv"
     else:
-        path = (
-            f"{args.output_dir}/{script_name}/{args.generation_model_id}_{args.generation_prompt_version}/"
-            f"{args.judge_model_id}_{args.scoring_prompt_version}_limit.csv"
-        )
+        path = f"{args.output_dir}/{script_name}/{args.generation_model_id}_{args.generation_prompt_version}/{args.judge_model_id}_{args.scoring_prompt_version}_limit.csv"
+        
     os.makedirs(os.path.dirname(path), exist_ok=True)
     return path
 
@@ -184,8 +183,12 @@ def load_generation_df(args):
         df = pd.read_csv(path)
         print(f"Loaded {path}: {len(df)} rows (debug/limit mode, assumed pre-filtered to this model+prompt).")
         return df
+    else:
+        if args.generation_csv_path:
+            path = args.generation_csv_path
+        else:
+            path = f"data/valueprism_generation_{args.generation_model_id}_{args.generation_prompt_version}.csv"
 
-    path = "data/valueprism_generations.csv"
     df = pd.read_csv(path)
     before = len(df)
 
