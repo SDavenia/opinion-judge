@@ -59,7 +59,7 @@ REGISTRY = {
         is_vlm=False, supports_system_role=True,
         batch_size_divide=1,
     ),
-    "Llama-3.2-1b": ModelSpec(
+    "llama-3.2-1b": ModelSpec(
         "meta-llama/Llama-3.2-1B-Instruct",
         AutoModelForCausalLM, AutoTokenizer,
         is_vlm=False, supports_system_role=True,
