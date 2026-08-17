@@ -209,7 +209,8 @@ def main():
         run_test_mode(args, model, tok, proc, spec, pairs_df, device, scoring_values=scoring_values)
         return
 
-    output_path = resolve_output_path(args, script_name="prob")
+    output_path = resolve_output_path(args, script_name="prob", limit=args.limit)
+    
     effective_batch_size = max(1, args.batch_size // spec.batch_size_divide)
     print(f"Judge: {spec.name} (key '{args.judge_model_id}') | effective batch size: {effective_batch_size} | device: {device}")
 
