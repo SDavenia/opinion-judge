@@ -140,14 +140,17 @@ def add_common_args(parser):
 
 
 def resolve_output_path(args,
-                        script_name: str):
+                        script_name: str,
+                        limit: bool):
     """
     # For final run, the generator id is not included (since we will have determined a best generator), while for all others it is.
     """
+
+    limit_str = "_limit" if limit else ""
     if args.final_run:
-        path = f"{args.output_dir}/{script_name}/{args.judge_model_id}_{args.scoring_prompt_version}.csv"
+        path = f"{args.output_dir}/{script_name}/{args.judge_model_id}_{args.scoring_prompt_version}{limit_str}.csv"
     else:
-        path = f"{args.output_dir}/{script_name}/{args.generation_model_id}_{args.generation_prompt_version}/{args.judge_model_id}_{args.scoring_prompt_version}_limit.csv"
+        path = f"{args.output_dir}/{script_name}/{args.generation_model_id}_{args.generation_prompt_version}_{args.judge_model_id}_{args.scoring_prompt_version}{limit_str}.csv"
         
     os.makedirs(os.path.dirname(path), exist_ok=True)
     return path

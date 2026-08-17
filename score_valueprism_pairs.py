@@ -37,7 +37,9 @@ def main():
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
 
-    output_path = resolve_output_path(args, script_name="greedy")
+    output_path = resolve_output_path(args, script_name="greedy", limit=args.limit)
+    print(output_path)
+    exit()
     effective_batch_size = max(1, args.batch_size // spec.batch_size_divide)
     print(f"Judge: {spec.name} (key '{args.judge_model_id}') | effective batch size: {effective_batch_size} | device: {device}")
 
