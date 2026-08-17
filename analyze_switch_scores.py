@@ -1,24 +1,15 @@
-"""
-Detailed breakdown analysis of safe/unsafe score directions.
-
-Equivalent to analyze_scores_detailed_breakdown.ipynb, but runnable from the
-command line with the model_id / limit / use_probabilistic parameters that
-used to be hardcoded in the notebook's first cell.
-
-Usage:
-    python analyze_scores_detailed_breakdown.py --model-id gemma3 --limit
-    python analyze_scores_detailed_breakdown.py --model-id llama-3.3-70b --no-limit --use-probabilistic
-"""
-
 import argparse
 import json
 
 import pandas as pd
 
+from utils.models_utils import REGISTRY
+from utils.prompts_utils import GENERATION_PROMPTS
+
 DROP_COLUMNS = [
     "vrd_1", "text_1", "explanation_1", "generated_opinion_1", "model_used_1",
     "vrd_2", "text_2", "explanation_2", "generated_opinion_2", "model_used_2",
-    "generated_score_1to2", "generated_score_2to1", "model_used",
+    "generated_score_1to2", "generated_score_2to1", "generation_model_id", "generation_prompt_version"
 ]
 
 TERM_WIDTH = 78
@@ -83,36 +74,70 @@ def parse_args():
         description="Detailed breakdown of safe/unsafe score directions for a given model."
     )
     parser.add_argument(
-        "--model-id", "-m", required=True,
-        help="Model identifier, e.g. 'gemma3' or 'llama-3.3-70b'.",
+        "--judge_model_id", required=True,
+        choices=list(REGISTRY.keys()),
+        help="Judge Model identifier, e.g. 'gemma3' or 'llama-3.3-70b'.",
     )
+    parser.add_argument(
+        "--generation_model_id", type=str, default="llama-3.3-70b",
+        choices=list(REGISTRY.keys()),
+        help="Generation Model identifier, e.g. 'gemma3' or 'llama-3.3-70b'.",
+    )
+    parser.add_argument(
+        "--generation_prompt_version", type=str, default="reflective_person",
+        choices=list(GENERATION_PROMPTS.keys()),
+    )
+    # Flags to choose whether to use greedy or probabilistic scoring/alignment data.
+    parser.add_argument(
+        "--use_probabilistic_scoring", action="store_true",
+        help="Use the '_probability' variant of the output_scores directory.",
+    )
+    parser.add_argument(
+        "--use_probabilistic_alignment", action="store_true",
+        help="Use the '_probability' variant of the model_alignment directory.",
+    )
+    parser.add_argument(
+        "--alignment_prompt_version", type=str
+    )
+    # Flags to modify the input path based on the number of situations used in the generation and scoring steps.
     limit_group = parser.add_mutually_exclusive_group()
     limit_group.add_argument(
         "--limit", dest="limit", action="store_true",
         help="Use the '_limit' variant of the input files (default).",
     )
     limit_group.add_argument(
-        "--no-limit", dest="limit", action="store_false",
-        help="Use the non-limited variant of the input files.",
-    )
-    parser.set_defaults(limit=True)
-    parser.add_argument(
-        "--use-probabilistic", action="store_true",
-        help="Use the '_probability' variant of the model_alignment directory.",
+        "--num_situations", type=int, default=None,
+        help="If passed, the scores are read from the corresponding directory in scoring/results{num_situations}."
     )
     return parser.parse_args()
 
 
-def load_data(model_id: str, limit: bool, use_probabilistic: bool):
-    scores_path = f"output_scores/{model_id}{'_limit' if limit else ''}_parsed.csv"
-    alignment_path = (
-        f"model_alignment{'_probability' if use_probabilistic else ''}/{model_id}.json"
-    )
-
+def load_data(judge_model_id: str, 
+              generation_model_id: str,
+              generation_prompt_version: str,
+              limit: bool | int | None, 
+              use_probabilistic_scoring: bool, 
+              use_probabilistic_alignment: bool,
+              alignment_prompt: str):
+    ### Read scores
+    # If num instances is specified, the path was changed
+    if isinstance(limit, int):
+        # limit == num_situations in this case
+        scores_path = f"scoring/results{limit}/{'prob' if use_probabilistic_scoring else 'greedy'}/{generation_model_id}_{generation_prompt_version}_{judge_model_id}_base.csv"
+    # if limit is passed as a bool
+    elif limit is True:
+        scores_path = f"scoring/results/{'prob' if use_probabilistic_scoring else 'greedy'}/{generation_model_id}_{generation_prompt_version}_{judge_model_id}_base_limit.csv"
     df_scores = pd.read_csv(scores_path)
-    model_alignment_data = json.load(open(alignment_path))
     df_scores = df_scores.drop(columns=DROP_COLUMNS)
 
+    ### Read model alignment data
+    if isinstance(limit, int):
+        alignment_path = (
+            f"model_alignment{'_probability' if use_probabilistic_alignment else ''}/results{limit}/{judge_model_id}_random_selected_{alignment_prompt}.json"
+        )
+    else:
+        alignment_path = f"model_alignment{'_probability' if use_probabilistic_alignment else ''}/results/{judge_model_id}_{alignment_prompt}.json"
+    model_alignment_data = json.load(open(alignment_path))
     return df_scores, model_alignment_data
 
 
@@ -373,16 +398,19 @@ def run_with_either_section(df_scores, model_alignment_data_reformatted):
 
 def main():
     args = parse_args()
-
     df_scores, model_alignment_data = load_data(
-        model_id=args.model_id,
-        limit=args.limit,
-        use_probabilistic=args.use_probabilistic,
+        judge_model_id=args.judge_model_id,
+        generation_model_id=args.generation_model_id,
+        generation_prompt_version=args.generation_prompt_version,
+        limit=args.limit if args.limit else args.num_situations, # If both None this will default to full set.
+        use_probabilistic_scoring=args.use_probabilistic_scoring,
+        use_probabilistic_alignment=args.use_probabilistic_alignment,
+        alignment_prompt=args.alignment_prompt_version
     )
     model_alignment_data_reformatted = reformat_model_alignment_data(model_alignment_data)
     df_scores = enrich_scores_with_alignment(df_scores, model_alignment_data_reformatted)
 
-    print(f"Model: {args.model_id}  |  limit={args.limit}  |  probabilistic={args.use_probabilistic}")
+    print(f"Model: {args.judge_model_id}  |  limit={args.limit}  |  probabilistic={args.use_probabilistic_alignment}")
 
     run_support_oppose_section(df_scores)
     run_with_either_section(df_scores, model_alignment_data_reformatted)
