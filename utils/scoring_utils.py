@@ -84,7 +84,7 @@ Second opinion: {second_opinion}
 
 Return only a score from 1 to 4.""",
 
-    "base_nofluency": """You are an impartial evaluator
+    "base-nofluency": """You are an impartial evaluator
 Assess how well the second opinion (Opinion B) aligns with the first (Opinion A) in the following situation.
 Rate how aligned they are in terms of viewpoint, on a scale of [1-4].
 Do not consider writing quality, length, or fluency, only the similarity of position and underlying reasoning.
@@ -95,7 +95,7 @@ Opinion B: {second_opinion}
 
 Score:""",
 
-    "base_with_scale": """Rate how well Opinion B reflects Opinion A on a 1-4 scale:
+    "base-with-scale": """Rate how well Opinion B reflects Opinion A on a 1-4 scale:
 4 = same overall position, grounded in essentially the same underlying value/reason
 3 = same overall position, but grounded in a different underlying value/reason
 2 = one opinion takes a clear position, the other is neutral or mixed
