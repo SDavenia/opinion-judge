@@ -28,7 +28,8 @@ def main():
 
     gen_df = load_generation_df(args)
     pairs_df = build_pairs(gen_df)
-
+    if args.num_examples is not None:
+        pairs_df = pairs_df.head(args.num_examples)
     spec = REGISTRY[args.judge_model_id]
     device = "cuda" if torch.cuda.is_available() else "cpu"
 

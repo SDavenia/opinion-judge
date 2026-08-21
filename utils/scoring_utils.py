@@ -93,7 +93,7 @@ Situation: {situation}
 Opinion A: {first_opinion}
 Opinion B: {second_opinion}
 
-Score:""",
+Return only a score from 1 to 4.""",
 
     "base-with-scale": """Rate how well Opinion B reflects Opinion A on a 1-4 scale:
 4 = same overall position, grounded in essentially the same underlying value/reason
@@ -136,6 +136,7 @@ def add_common_args(parser):
     parser.add_argument("--output_dir", type=str, default="output_scores", help="Where to save results")
     parser.add_argument("--limit", action="store_true", default=None, help="Optional row limit for debugging")
     parser.add_argument("--final_run", action="store_true", help="If set, writes to the final (non-limit) output path")
+    parser.add_argument("--num_examples", type=int, default=None, help="Optional limit on number of examples to score (for debugging)")
     return parser
 
 
