@@ -13,6 +13,7 @@ from utils.scoring_utils import (
     build_pairs,
     build_direction_prompts,
     tokenize_for_scoring,
+    add_parsed_generation_scoring
 )
 
 
@@ -85,6 +86,7 @@ def main():
         for i, text in zip(batch_idx, decoded):
             generations[i] = text.strip()
 
+    pairs_df = add_parsed_generation_scoring(pairs_df)
     save_progress()
     print(f"Saved {len(pairs_df)} pairs (with 1->2 and 2->1 scores) to {output_path}")
 

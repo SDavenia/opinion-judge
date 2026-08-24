@@ -312,3 +312,30 @@ def tokenize_for_scoring(tok, proc, spec, texts, device):
         inputs = tok(texts, return_tensors="pt", padding=True, truncation=True).to(device)
     tok.padding_side = prev_padding_side
     return inputs
+
+def parse_generation_scoring(generation: str,
+                             options: list[str]=None) -> str|None:
+
+    if options is None:
+        options = ["1", "2", "3", "4"]
+
+    op_found = []
+    for option in options:
+        if option in generation:
+            op_found.append(option)
+
+    if len(op_found) == 1:
+        return op_found[0]
+    else:
+        #both the case of no option found or multiple
+        return None 
+
+
+def add_parsed_generation_scoring(df: pd.DataFrame) -> pd.DataFrame:
+
+    """
+    Adds parsed_score_1to2 and parsed_score_2to1 columns to the dataframe, based on the generated scores.
+    """
+    df["parsed_score_1to2"] = df["generated_score_1to2"].apply(parse_generation_scoring)
+    df["parsed_score_2to1"] = df["generated_score_2to1"].apply(parse_generation_scoring)
+    return df
