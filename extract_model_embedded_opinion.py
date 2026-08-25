@@ -16,7 +16,8 @@ PATH_VALUE_PRISM = "data/valueprism_data.csv"
 
 def parse_command_line_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_id", type=str, default="llama-3.2-1b", help="Model ID to use for generation")
+    parser.add_argument("--generator_model_id", type=str, default="llama-3.2-1b", help="Model ID to use for generating the embedded opinion")
+    parser.add_argument("--judge_model_id", type=str, default="llama-3.2-1b", help="Model ID to use for judging that we need to extract the embedded opinion from")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size for generation")
     parser.add_argument("--max_new_tokens", type=int, default=20, help="Max new tokens to generate per opinion")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for generation")
@@ -221,8 +222,8 @@ def get_situations(args):
             raise ValueError(f"Requested n_situations ({args.n_situations}) is greater than the number of available situations ({len(value_prism_df)}) in the dataset.")
         return value_prism_df["situation"].drop_duplicates().head(args.n_situations).tolist()
     elif args.situations == "random_selected":
-        # Read the generations file and keep those
-        generations_df = pd.read_csv(f"generations/output_{args.model_id}_reflective_person.csv", encoding="utf-8")
+        # Read the generations file and keep those entries
+        generations_df = pd.read_csv(f"generations/output_{args.generator_model_id}_reflective_person.csv", encoding="utf-8")
         print(f"Returning a total of {len(generations_df['situation'].drop_duplicates().tolist())} situations from the generations file for model {args.model_id}.")
         return generations_df["situation"].drop_duplicates().tolist()
     
@@ -232,14 +233,14 @@ def get_situations(args):
 
 def main():
     args = parse_command_line_args()
-    spec = REGISTRY[args.model_id]
+    spec = REGISTRY[args.judge_model_id]
     device = "cuda" if torch.cuda.is_available() else "cpu"
     situations = get_situations(args)
     model, proc = load_model(spec)
     tok = proc.tokenizer if spec.is_vlm else proc
 
     effective_batch_size = max(1, args.batch_size // spec.batch_size_divide)
-    print(f"Model: {spec.name} (key '{args.model_id}') | effective batch size: {effective_batch_size} | device: {device}")
+    print(f"Model: {spec.name} (key '{args.judge_model_id}') | effective batch size: {effective_batch_size} | device: {device}")
 
     situations, prompts = [[situation] * args.n_samples for situation in situations], [prepare_alignment_prompt(situation, args.alignment_prompt_version, args.n_samples) for situation in situations]
     # Flatten the lists of situations and prompts
@@ -249,7 +250,7 @@ def main():
     generations = [None] * len(prompts)
     indices = list(range(len(prompts)))
 
-    for batch_idx in tqdm(list(batch_iterable(indices, effective_batch_size)), desc=f"Generating ({args.model_id})"):
+    for batch_idx in tqdm(list(batch_iterable(indices, effective_batch_size)), desc=f"Generating ({args.judge_model_id})"):
         batch_messages = [messages_list[i] for i in batch_idx]
         batch_texts = [apply_chat_template_safe(tok, m, spec, want_thinking=False) for m in batch_messages]
 
@@ -289,7 +290,7 @@ def main():
         "generation": generations,
         "parsed_evaluation": parsed_generations
     })
-    path_csv = f"model_alignment/{args.model_id}_{args.situations}_{args.alignment_prompt_version}_generations.csv"
+    path_csv = f"model_alignment/{args.judge_model_id}_{args.situations}_{args.alignment_prompt_version}_generations.csv"
     print(f"Saving generations and parsed evaluations to {path_csv}")
     #create the directory if it doesn't exist
     os.makedirs(os.path.dirname(path_csv), exist_ok=True)
@@ -334,7 +335,7 @@ def main():
         print(f"Total GPU memory allocated: {total_allocated:.2f} MB")
         print(f"Total GPU memory reserved: {total_reserved:.2f} MB")
 
-    with open(f"model_alignment/{args.model_id}_{args.situations}_{args.alignment_prompt_version}.json", "w", encoding="utf-8") as f:
+    with open(f"model_alignment/{args.judge_model_id}_{args.situations}_{args.alignment_prompt_version}.json", "w", encoding="utf-8") as f:
         json.dump(situation_distribution, f, indent=4)
 
 
