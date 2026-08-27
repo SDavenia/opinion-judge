@@ -60,6 +60,7 @@ def main():
         pairs_df["judge_model_used"] = spec.name
         pairs_df["generation_model_id"] = args.generation_model_id
         pairs_df["generation_prompt_version"] = args.generation_prompt_version
+        pairs_df = add_parsed_generation_scoring(pairs_df)
         pairs_df.to_csv(output_path, index=False)
 
     for batch_idx in tqdm(list(batch_iterable(indices, effective_batch_size)), desc=f"Generating ({args.judge_model_id})"):
@@ -86,7 +87,6 @@ def main():
         for i, text in zip(batch_idx, decoded):
             generations[i] = text.strip()
 
-    pairs_df = add_parsed_generation_scoring(pairs_df)
     save_progress()
     print(f"Saved {len(pairs_df)} pairs (with 1->2 and 2->1 scores) to {output_path}")
 
