@@ -13,7 +13,7 @@ from utils.scoring_utils import (
     build_pairs,
     build_direction_prompts,
     tokenize_for_scoring,
-    add_parsed_generation_scoring
+    parse_generation_scoring
 )
 
 
@@ -60,7 +60,9 @@ def main():
         pairs_df["judge_model_used"] = spec.name
         pairs_df["generation_model_id"] = args.generation_model_id
         pairs_df["generation_prompt_version"] = args.generation_prompt_version
-        pairs_df = add_parsed_generation_scoring(pairs_df)
+        pairs_df["parsed_score_1to2"] = pairs_df["generated_score_1to2"].apply(parse_generation_scoring)
+        pairs_df["parsed_score_2to1"] = pairs_df["generated_score_2to1"].apply(parse_generation_scoring)
+            
         pairs_df.to_csv(output_path, index=False)
 
     for batch_idx in tqdm(list(batch_iterable(indices, effective_batch_size)), desc=f"Generating ({args.judge_model_id})"):
