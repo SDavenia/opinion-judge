@@ -1,7 +1,8 @@
 import os
 import pandas as pd
-
+import re
 from utils.models_utils import REGISTRY
+from pathlib import Path
 
 GENERATION_PROMPTS = {
     "base": """You are a precise text generation engine for an NLP evaluation dataset.
@@ -106,7 +107,23 @@ Opinion A: {first_opinion}
 Opinion B: {second_opinion}
 
 Return only the number.""",
+
+"base_01": """You are an impartial evaluator.
+Assess how well the second opinion aligns with the first in the following situation.
+You have to assign a score in the range [0,1] following this criteria:
+-1.0 — Full alignment: The second opinion has essentially the same overall stance as the first, including the same direction, degree of support/opposition, and relevant ambivalence or qualifications. Differences in values, reasons, emphasis, or wording are minor and do not materially change the position.
+-[0.7, 0.9] — Strong alignment: The second opinion substantially shares the first opinion's stance. It may differ in the strength of its position, in how it balances competing considerations, or in its values and reasons, but the main position is clearly aligned.
+-[0.4, 0.6] — Partial alignment: The opinions share some meaningful aspects of their stance but also differ in important ways. This may include agreeing on one side of an issue while disagreeing on another, having different degrees of ambivalence, or reaching similar overall conclusions while placing substantially different weight on competing considerations. 
+-[0.1, 0.3] — Weak alignment: The opinions largely differ in their overall stance, including the way they resolve or balance competing considerations.
+-0.0 — No alignment: The opinions have fundamentally incompatible stances. 
+
+Situation: {situation}
+First opinion: {first_opinion}
+Second opinion: {second_opinion}
+
+Return only the score."""
 }
+
 
 DIGITS = ["1", "2", "3", "4"]
 
@@ -137,6 +154,12 @@ def add_common_args(parser):
     parser.add_argument("--limit", action="store_true", default=None, help="Optional row limit for debugging")
     parser.add_argument("--final_run", action="store_true", help="If set, writes to the final (non-limit) output path")
     parser.add_argument("--num_examples", type=int, default=None, help="Optional limit on number of examples to score (for debugging)")
+    parser.add_argument("--option_setting", type=str, default="four", 
+                        choices=["four", "0_1"], help="The setting for the options used in the scoring part.")
+
+    parser.add_argument("--extract_ids_from", type=Path,
+                        default=None,
+                        help="Path of .csv file from where to extract the ids of the pairs to score.")
     return parser
 
 
@@ -313,29 +336,71 @@ def tokenize_for_scoring(tok, proc, spec, texts, device):
     tok.padding_side = prev_padding_side
     return inputs
 
-def parse_generation_scoring(generation: str,
-                             options: list[str]=None) -> str|None:
 
-    if options is None:
+def parse_generation_scoring(generation: str,
+                              option_setting: str = None,
+                              decimals: int = 1) -> str | float | None:
+
+    if option_setting is None:
+        option_setting = "four"
+
+    if option_setting == "four":
         options = ["1", "2", "3", "4"]
 
-    op_found = []
-    for option in options:
-        if option in generation:
-            op_found.append(option)
+        op_found = []
+        for option in options:
+            if option in generation:
+                op_found.append(option)
 
-    if len(op_found) == 1:
-        return op_found[0]
+        if len(op_found) == 1:
+            return op_found[0]
+        else:
+            # both the case of no option found or multiple
+            return None
+
+    elif option_setting == "0_1":
+        # Matches: "0.75", ".75", "1.0", "0", "1" — but not the "1" inside "10"
+        pattern = r"(?<!\d)(?:0?\.\d+|1\.0+|0|1)(?!\d)"
+        matches = re.findall(pattern, generation)
+
+        candidates = []
+        for m in matches:
+            try:
+                val = float(m)
+            except ValueError:
+                continue
+            if 0.0 <= val <= 1.0:
+                candidates.append(round(val, decimals))
+
+        if len(candidates) == 0:
+            return None
+
+        distinct = set(candidates)
+        if len(distinct) == 1:
+            return candidates[0]
+        else:
+            # multiple different candidate scores found -> ambiguous
+            return None
+
     else:
-        #both the case of no option found or multiple
-        return None 
+        raise ValueError(f"Unknown option_setting: {option_setting}")
 
 
-def add_parsed_generation_scoring(df: pd.DataFrame) -> pd.DataFrame:
-
+def add_parsed_generation_scoring(df: pd.DataFrame,
+                                   option_setting: str = None,
+                                   decimals: int = 1) -> pd.DataFrame:
     """
-    Adds parsed_score_1to2 and parsed_score_2to1 columns to the dataframe, based on the generated scores.
+    Adds parsed_score_1to2 and parsed_score_2to1 columns to the dataframe,
+    based on the generated scores.
     """
-    df["parsed_score_1to2"] = df["generated_score_1to2"].apply(parse_generation_scoring)
-    df["parsed_score_2to1"] = df["generated_score_2to1"].apply(parse_generation_scoring)
+
+    if option_setting is None:
+        option_setting = "four"
+
+    df["parsed_score_1to2"] = df["generated_score_1to2"].apply(
+        parse_generation_scoring, option_setting=option_setting, decimals=decimals
+    )
+    df["parsed_score_2to1"] = df["generated_score_2to1"].apply(
+        parse_generation_scoring, option_setting=option_setting, decimals=decimals
+    )
     return df

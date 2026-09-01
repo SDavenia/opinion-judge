@@ -31,6 +31,16 @@ def main():
     pairs_df = build_pairs(gen_df)
     if args.num_examples is not None:
         pairs_df = pairs_df.head(args.num_examples)
+
+    if args.extract_ids_from is not None:
+        reference_df_ids = pd.read_csv(args.extract_ids_from)
+        #now we filter pairs_df using the couples in reference_df_ids, meaning that we select a row r only if there is a row x for which r["id_1"] == x["id_1"] and r["id_2"] == x["id_2"]
+        pairs_df = pairs_df.merge(
+    reference_df_ids[["id_1", "id_2"]],
+    on=["id_1", "id_2"],
+    how="inner"
+)
+
     spec = REGISTRY[args.judge_model_id]
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -60,8 +70,8 @@ def main():
         pairs_df["judge_model_used"] = spec.name
         pairs_df["generation_model_id"] = args.generation_model_id
         pairs_df["generation_prompt_version"] = args.generation_prompt_version
-        pairs_df["parsed_score_1to2"] = pairs_df["generated_score_1to2"].apply(parse_generation_scoring)
-        pairs_df["parsed_score_2to1"] = pairs_df["generated_score_2to1"].apply(parse_generation_scoring)
+        pairs_df["parsed_score_1to2"] = pairs_df["generated_score_1to2"].apply(parse_generation_scoring, option_setting=args.option_setting)
+        pairs_df["parsed_score_2to1"] = pairs_df["generated_score_2to1"].apply(parse_generation_scoring, option_setting=args.option_setting)
             
         pairs_df.to_csv(output_path, index=False)
 
