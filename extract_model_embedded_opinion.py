@@ -16,7 +16,7 @@ PATH_VALUE_PRISM = "data/valueprism_data.csv"
 
 def parse_command_line_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--generator_model_id", type=str, default="llama-3.2-1b", help="Model ID to use for generating the embedded opinion")
+    parser.add_argument("--generation_model_id", type=str, default="llama-3.2-1b", help="Model ID to use for generating the embedded opinion")
     parser.add_argument("--judge_model_id", type=str, default="llama-3.2-1b", help="Model ID to use for judging that we need to extract the embedded opinion from")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size for generation")
     parser.add_argument("--max_new_tokens", type=int, default=20, help="Max new tokens to generate per opinion")
@@ -223,8 +223,8 @@ def get_situations(args):
         return value_prism_df["situation"].drop_duplicates().head(args.n_situations).tolist()
     elif args.situations == "random_selected":
         # Read the generations file and keep those entries
-        generations_df = pd.read_csv(f"generations/output_{args.generator_model_id}_reflective_person.csv", encoding="utf-8")
-        print(f"Returning a total of {len(generations_df['situation'].drop_duplicates().tolist())} situations from the generations file for model {args.model_id}.")
+        generations_df = pd.read_csv(f"generations/output_{args.generation_model_id}_reflective_person.csv", encoding="utf-8")
+        print(f"Returning a total of {len(generations_df['situation'].drop_duplicates().tolist())} situations from the generations file for model {args.generation_model_id}.")
         return generations_df["situation"].drop_duplicates().tolist()
     
     else:

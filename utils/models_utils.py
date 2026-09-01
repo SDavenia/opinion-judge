@@ -82,7 +82,7 @@ def load_model(spec: ModelSpec):
 
     load_kwargs = {
         "torch_dtype": torch.bfloat16,
-        "device_map": "balanced",
+        "device_map": "auto",
         **spec.load_kwargs,  # spec wins on conflict
     }
     model = spec.model_class.from_pretrained(spec.name, token=HF_TOKEN, **load_kwargs)
