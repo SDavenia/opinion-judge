@@ -13,7 +13,8 @@ from utils.scoring_utils import (
     build_pairs,
     build_direction_prompts,
     tokenize_for_scoring,
-    parse_generation_scoring
+    parse_generation_scoring,
+    expand_pairs_for_variations
 )
 
 
@@ -54,8 +55,8 @@ def main():
     effective_batch_size = max(1, args.batch_size // spec.batch_size_divide)
     print(f"Judge: {spec.name} (key '{args.judge_model_id}') | effective batch size: {effective_batch_size} | device: {device}")
 
-    entries = build_direction_prompts(pairs_df, args.scoring_prompt_version) # List of tuples: (direction, id1, id2, prompt)
-    prompts = [e[3] for e in entries]
+    entries = build_direction_prompts(pairs_df, args.scoring_prompt_version) # (variation, direction, id1, id2, prompt)
+    prompts = [e[4] for e in entries]   # was e[3]
 
     messages_list = [build_messages(p, spec, want_thinking=False) for p in prompts]
     texts = [apply_chat_template_safe(tok, m, spec, want_thinking=False) for m in messages_list]
@@ -63,8 +64,14 @@ def main():
     generations = [None] * len(texts)
     indices = list(range(len(texts)))
 
+    # Expand pairs_df to one row per (pair, variation) BEFORE save_progress,
+    # so it lines up with the 0::2 / 1::2 slicing of `generations`.
+    pairs_df = expand_pairs_for_variations(pairs_df, args.scoring_prompt_version)
+
     def save_progress():
-        # Even indices are the 1->2 direction, odd indices are 2->1.
+        # Even indices are the 1->2 direction, odd indices are 2->1, within each
+        # (row, variation) block -- expand_pairs_for_variations already put
+        # pairs_df rows in matching order.
         pairs_df["generated_score_1to2"] = pd.Series(generations[0::2])
         pairs_df["generated_score_2to1"] = pd.Series(generations[1::2])
         pairs_df["judge_model_used"] = spec.name
@@ -72,7 +79,7 @@ def main():
         pairs_df["generation_prompt_version"] = args.generation_prompt_version
         pairs_df["parsed_score_1to2"] = pairs_df["generated_score_1to2"].apply(parse_generation_scoring, option_setting=args.option_setting)
         pairs_df["parsed_score_2to1"] = pairs_df["generated_score_2to1"].apply(parse_generation_scoring, option_setting=args.option_setting)
-            
+
         pairs_df.to_csv(output_path, index=False)
 
     for batch_idx in tqdm(list(batch_iterable(indices, effective_batch_size)), desc=f"Generating ({args.judge_model_id})"):

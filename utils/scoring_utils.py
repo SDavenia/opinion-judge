@@ -108,7 +108,8 @@ Opinion B: {second_opinion}
 
 Return only the number.""",
 
-"base_01": """You are an impartial evaluator.
+    "0_1": {
+        "base": """You are an impartial evaluator.
 Assess how well the second opinion aligns with the first in the following situation.
 You have to assign a score in the range [0,1] following this criteria:
 -1.0 — Full alignment: The second opinion has essentially the same overall stance as the first, including the same direction, degree of support/opposition, and relevant ambivalence or qualifications. Differences in values, reasons, emphasis, or wording are minor and do not materially change the position.
@@ -121,7 +122,68 @@ Situation: {situation}
 First opinion: {first_opinion}
 Second opinion: {second_opinion}
 
+Return only the score.""",
+
+        "lex_var": """You are a helpful and meticulous evaluator.
+You have to assess how well the second opinion aligns with the first in a given situation.
+You have to assign a score in the range [0,1] following the criteria:
+-1.0 — The second opinion has essentially the same overall stance as the first, including the same direction, degree of support/opposition, and relevant ambivalence or qualifications. Differences in values, reasons, emphasis, or wording are minor and do not materially change the position.
+-[0.7, 0.9] — The second opinion substantially shares the first opinion's stance. It may differ in the strength of its position, in how it balances competing considerations, or in its values and reasons, but the main position is clearly aligned.
+-[0.4, 0.6] — The opinions share some meaningful aspects of their stance but also differ in important ways. This may include agreeing on one side of an issue while disagreeing on another, having different degrees of ambivalence, or reaching similar overall conclusions while placing substantially different weight on competing considerations. 
+-[0.1, 0.3] — The opinions largely differ in their overall stance, including the way they resolve or balance competing considerations.
+-0.0 — The opinions have fundamentally incompatible stances. 
+
+Situation: {situation}
+First opinion: {first_opinion}
+Second opinion: {second_opinion}
+
+Answer only with the score.""",
+
+        "reverse_order": """You are an impartial evaluator.
+Assess how well the second opinion aligns with the first in the following situation.
+You have to assign a score in the range [0,1] following this criteria:
+-0.0 — No alignment: The opinions have fundamentally incompatible stances. 
+-[0.1, 0.3] — Weak alignment: The opinions largely differ in their overall stance, including the way they resolve or balance competing considerations.
+-[0.4, 0.6] — Partial alignment: The opinions share some meaningful aspects of their stance but also differ in important ways. This may include agreeing on one side of an issue while disagreeing on another, having different degrees of ambivalence, or reaching similar overall conclusions while placing substantially different weight on competing considerations. 
+-[0.7, 0.9] — Strong alignment: The second opinion substantially shares the first opinion's stance. It may differ in the strength of its position, in how it balances competing considerations, or in its values and reasons, but the main position is clearly aligned.
+-1.0 — Full alignment: The second opinion has essentially the same overall stance as the first, including the same direction, degree of support/opposition, and relevant ambivalence or qualifications. Differences in values, reasons, emphasis, or wording are minor and do not materially change the position.
+
+Situation: {situation}
+First opinion: {first_opinion}
+Second opinion: {second_opinion}
+
+Return only the score.""",
+
+        "lex_var_reverse_order": """You are a helpful and meticulous evaluator.
+You have to assess how well the second opinion aligns with the first in a given situation.
+You have to assign a score in the range [0,1] following the criteria:
+-0.0 — The opinions have fundamentally incompatible stances. 
+-[0.1, 0.3] — The opinions largely differ in their overall stance, including the way they resolve or balance competing considerations.
+-[0.4, 0.6] — The opinions share some meaningful aspects of their stance but also differ in important ways. This may include agreeing on one side of an issue while disagreeing on another, having different degrees of ambivalence, or reaching similar overall conclusions while placing substantially different weight on competing considerations. 
+-[0.7, 0.9] — The second opinion substantially shares the first opinion's stance. It may differ in the strength of its position, in how it balances competing considerations, or in its values and reasons, but the main position is clearly aligned.
+-1.0 — The second opinion has essentially the same overall stance as the first, including the same direction, degree of support/opposition, and relevant ambivalence or qualifications. Differences in values, reasons, emphasis, or wording are minor and do not materially change the position.
+
+Situation: {situation}
+First opinion: {first_opinion}
+Second opinion: {second_opinion}
+
+Answer only with the score.""",
+
+        "criteria_after": """You are an impartial evaluator.
+Assess how well the second opinion aligns with the first in the following situation.
+Situation: {situation}
+First opinion: {first_opinion}
+Second opinion: {second_opinion}
+
+You have to assign a score in the range [0,1] following this criteria:
+-1.0 — Full alignment: The second opinion has essentially the same overall stance as the first, including the same direction, degree of support/opposition, and relevant ambivalence or qualifications. Differences in values, reasons, emphasis, or wording are minor and do not materially change the position.
+-[0.7, 0.9] — Strong alignment: The second opinion substantially shares the first opinion's stance. It may differ in the strength of its position, in how it balances competing considerations, or in its values and reasons, but the main position is clearly aligned.
+-[0.4, 0.6] — Partial alignment: The opinions share some meaningful aspects of their stance but also differ in important ways. This may include agreeing on one side of an issue while disagreeing on another, having different degrees of ambivalence, or reaching similar overall conclusions while placing substantially different weight on competing considerations. 
+-[0.1, 0.3] — Weak alignment: The opinions largely differ in their overall stance, including the way they resolve or balance competing considerations.
+-0.0 — No alignment: The opinions have fundamentally incompatible stances.
+
 Return only the score."""
+    }
 }
 
 
@@ -179,13 +241,25 @@ def resolve_output_path(args,
     os.makedirs(os.path.dirname(path), exist_ok=True)
     return path
 
-
-def prepare_evaluator_prompt(situation, first_opinion, second_opinion, prompt_version):
+def get_prompt_variations(prompt_version):
     """
-    Formats the prompt for the judge model.
+    Returns {variation_name: prompt_template} for the given scoring_prompt_version.
+    If PROMPTS[prompt_version] is a plain template string (not a dict of variants),
+    wraps it as {prompt_version: template} so downstream code can treat both
+    cases uniformly.
     """
-    return PROMPTS[prompt_version].format(situation=situation, first_opinion=first_opinion, second_opinion=second_opinion)
+    entry = PROMPTS[prompt_version]
+    if isinstance(entry, dict):
+        return entry
+    return {prompt_version: entry}
 
+def prepare_evaluator_prompt(situation, first_opinion, second_opinion, prompt_template):
+    """
+    Formats the given prompt template for the judge model.
+    (Now takes the template text directly, not a lookup key -- see
+    get_prompt_variations for resolving a --scoring_prompt_version into templates.)
+    """
+    return prompt_template.format(situation=situation, first_opinion=first_opinion, second_opinion=second_opinion)
 
 def assign_expected_score(row):
     if row["valence_1"] == "Either" or row["valence_2"] == "Either":
@@ -262,21 +336,45 @@ def build_pairs(gen_df):
 
 def build_direction_prompts(pairs_df, prompt_version):
     """
-    Returns a flat list of (direction, id_1, id_2, prompt), interleaved as
-    [row0_1to2, row0_2to1, row1_1to2, row1_2to1, ...] so downstream
-    [0::2] / [1::2] slicing recovers each direction.
+    Returns a flat list of (variation, direction, id_1, id_2, prompt).
+
+    For each row in pairs_df, iterates over every prompt variation returned by
+    get_prompt_variations(prompt_version) and both directions, interleaved as:
+    [row0_var0_1to2, row0_var0_2to1, row0_var1_1to2, row0_var1_2to1, ..., row1_var0_1to2, ...]
+
+    i.e. a block of `2 * num_variations` consecutive entries corresponds to one
+    row of pairs_df, and within that block, consecutive pairs are (1to2, 2to1)
+    for a given variation, in the same order as get_prompt_variations(...).keys().
+    This ordering must match expand_pairs_for_variations below.
     """
+    variations = get_prompt_variations(prompt_version)
     entries = []
     for _, row in pairs_df.iterrows():
-        entries.append((
-            "1to2", row["id_1"], row["id_2"],
-            prepare_evaluator_prompt(row["situation"], row["generated_opinion_1"], row["generated_opinion_2"], prompt_version),
-        ))
-        entries.append((
-            "2to1", row["id_1"], row["id_2"],
-            prepare_evaluator_prompt(row["situation"], row["generated_opinion_2"], row["generated_opinion_1"], prompt_version),
-        ))
+        for var_name, template in variations.items():
+            entries.append((
+                var_name, "1to2", row["id_1"], row["id_2"],
+                prepare_evaluator_prompt(row["situation"], row["generated_opinion_1"], row["generated_opinion_2"], template),
+            ))
+            entries.append((
+                var_name, "2to1", row["id_1"], row["id_2"],
+                prepare_evaluator_prompt(row["situation"], row["generated_opinion_2"], row["generated_opinion_1"], template),
+            ))
     return entries
+
+
+def expand_pairs_for_variations(pairs_df, prompt_version):
+    """
+    Repeats each row of pairs_df once per prompt variation in
+    get_prompt_variations(prompt_version), tagging each copy with a
+    'prompt_variation' column. Row order is [row0_var0, row0_var1, ...,
+    row1_var0, row1_var1, ...] to match build_direction_prompts's grouping,
+    so expanded row i lines up with the (2*i, 2*i+1) slice of entries/generations.
+    """
+    variations = list(get_prompt_variations(prompt_version).keys())
+    n = len(variations)
+    expanded = pairs_df.loc[pairs_df.index.repeat(n)].reset_index(drop=True)
+    expanded["prompt_variation"] = variations * len(pairs_df)
+    return expanded
 
 
 def select_calibration_prompts(pairs_df, prompt_version, n_per_bucket=2, seed=0):
