@@ -30,9 +30,9 @@ def parse_command_line_args():
 
 def prepare_generation_prompt(row, prompt_version):
     situation = row['situation']
-    value = row['text']
-    valence = row['valence']
-    explanation = row['explanation']
+    value = row['vp_vrd_value']
+    valence = row['stance']
+    explanation = row['vp_explanation']
 
     if valence == 'Supports':
         stance_instruction = f"Write an opinion that firmly ADVOCATES FOR or JUSTIFIES the action in the situation, using the principle of {value}."
@@ -69,8 +69,6 @@ def main():
     generations = [None] * len(prompts)
     indices = list(range(len(prompts)))
 
-    # Pre-create the column so .iloc assignment inside the loop works
-    valueprism_df["generated_opinion"] = pd.NA
 
     os.makedirs(args.output_dir, exist_ok=True)
     
@@ -110,8 +108,8 @@ def main():
         # os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
         # valueprism_df.to_csv(output_path, index=False)
 
-    valueprism_df["generated_opinion"] = generations
-    valueprism_df["model_used"] = spec.name
+    valueprism_df["text"] = generations
+    valueprism_df["generation_model"] = args.generation_model_id
     
     valueprism_df.to_csv(output_path, index=False)
     print(f"Saved {len(valueprism_df)} generations to {output_path}")
