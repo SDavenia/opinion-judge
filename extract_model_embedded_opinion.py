@@ -4,6 +4,7 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 from utils.models_utils import load_model, REGISTRY
+from pathlib import Path
 
 from utils.prompts_utils import build_messages, apply_chat_template_safe
 from utils.generation_utils import batch_iterable
@@ -11,21 +12,16 @@ import re
 import os
 
 
-
-PATH_VALUE_PRISM = "data/valueprism_data.csv"
-
 def parse_command_line_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--generation_model_id", type=str, default="llama-3.2-1b", help="Model ID to use for generating the embedded opinion")
     parser.add_argument("--judge_model_id", type=str, default="llama-3.2-1b", help="Model ID to use for judging that we need to extract the embedded opinion from")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size for generation")
     parser.add_argument("--max_new_tokens", type=int, default=20, help="Max new tokens to generate per opinion")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for generation")
     parser.add_argument("--n_samples", type=int, default=5, help="Number of times to repeat the generation for each situation")
-    parser.add_argument("--situations", type=str, 
-                        choices=[None, "high_stake", "first_n", "random_selected"],
-                        help="If passed, only for a subset of situations this will be run, if == 'high_stake' only HIGH_STAKES situations are considered. if == 'first_n' only the first n situations will be run.")
-    parser.add_argument("--n_situations", type=int, default=None, help="Parameter for first_n")
+
+    parser.add_argument("--path_dataset", type=Path, required=True)
+    parser.add_argument("--output_dir", type=Path, default="model_alignment", help="Directory to save the output CSV and JSON files")
     parser.add_argument("--alignment_prompt_version", type=str, default="impartial_evaluator", help="Version of the prompt to use for parsing generations")
     return parser.parse_args()
 
@@ -211,24 +207,8 @@ def parse_generations(generations, prompt_version):
     return parsed_results
 
 def get_situations(args):
-    if args.situations == "high_stake":
-        return HIGH_STAKE_SITUATIONS
-    elif args.situations == "first_n":
-        if args.n_situations is None or args.n_situations <= 0:
-            raise ValueError(f"When using 'first_n' situations, you have to set 'n_situations, meanwhile you set: {args.n_situations}")
-
-        value_prism_df = pd.read_csv(PATH_VALUE_PRISM, encoding="utf-8")
-        if args.n_situations > len(value_prism_df):
-            raise ValueError(f"Requested n_situations ({args.n_situations}) is greater than the number of available situations ({len(value_prism_df)}) in the dataset.")
-        return value_prism_df["situation"].drop_duplicates().head(args.n_situations).tolist()
-    elif args.situations == "random_selected":
-        # Read the generations file and keep those entries
-        generations_df = pd.read_csv(f"generations/output_{args.generation_model_id}_reflective_person.csv", encoding="utf-8")
-        print(f"Returning a total of {len(generations_df['situation'].drop_duplicates().tolist())} situations from the generations file for model {args.generation_model_id}.")
-        return generations_df["situation"].drop_duplicates().tolist()
-    
-    else:
-        raise ValueError(f"Invalid situations argument: {args.situations}. Must be 'high_stake' or 'first_n'.")
+    df = pd.read_csv(args.path_dataset)
+    return df["situation"].unique().tolist()
 
 
 def main():
@@ -243,6 +223,7 @@ def main():
     print(f"Model: {spec.name} (key '{args.judge_model_id}') | effective batch size: {effective_batch_size} | device: {device}")
 
     situations, prompts = [[situation] * args.n_samples for situation in situations], [prepare_alignment_prompt(situation, args.alignment_prompt_version, args.n_samples) for situation in situations]
+
     # Flatten the lists of situations and prompts
     situations = [item for sublist in situations for item in sublist]
     prompts = [item for sublist in prompts for item in sublist]
@@ -288,9 +269,10 @@ def main():
     df = pd.DataFrame({
         "situation": situations,
         "generation": generations,
-        "parsed_evaluation": parsed_generations
+        "parsed_evaluations": parsed_generations
     })
-    path_csv = f"model_alignment/{args.judge_model_id}_{args.situations}_{args.alignment_prompt_version}_generations.csv"
+
+    path_csv = f"{args.output_dir}/{args.judge_model_id}_{args.alignment_prompt_version}.csv"
     print(f"Saving generations and parsed evaluations to {path_csv}")
     #create the directory if it doesn't exist
     os.makedirs(os.path.dirname(path_csv), exist_ok=True)
@@ -335,7 +317,7 @@ def main():
         print(f"Total GPU memory allocated: {total_allocated:.2f} MB")
         print(f"Total GPU memory reserved: {total_reserved:.2f} MB")
 
-    with open(f"model_alignment/{args.judge_model_id}_{args.situations}_{args.alignment_prompt_version}.json", "w", encoding="utf-8") as f:
+    with open(f"{args.output_dir}/{args.judge_model_id}_{args.alignment_prompt_version}.json", "w", encoding="utf-8") as f:
         json.dump(situation_distribution, f, indent=4)
 
 
