@@ -13,6 +13,8 @@ data/
 output_scores/
 model_alignment/
 model_alignment_probability/
+scoring/
+generations
 
 # SLURM Runs
 sbatch_run/
