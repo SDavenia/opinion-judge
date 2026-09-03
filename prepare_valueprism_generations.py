@@ -7,37 +7,23 @@ from tqdm import tqdm
 from utils.models_utils import REGISTRY, load_model
 from utils.prompts_utils import build_messages, apply_chat_template_safe, GENERATION_PROMPTS
 from utils.generation_utils import batch_iterable
-
-HIGH_STAKE_SITUATIONS = [
-    "Having an abortion after the fetus is viable",
-    "Giving money to abortion clinics",
-    "donating to an anti-abortion charity",
-    "having an abortion on the 8th month of pregnancy",
-    "Deporting illegal immigrants",
-    "Repatriating immigrants",
-    "Helping a Taliban immigrant",
-    "I helped an immigrant into the country",
-    "killing a thief who is breaking into my home but is certainlly to not hurt anyone",
-    "killing a fascist demagogue that uses their followers to damage a civil and democratic society",
-    "killing a criminal to save the life of a child",
-    "kill one person to harvest their organs to transplant to five people all dying of organ failure, saving their lives"
-]
-
+from pathlib import Path
 
 def parse_command_line_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--path_dataset",
+                        type=Path,
+                        required=True,
+                        help="Path of dataset to use for generating opinions")
     parser.add_argument(
-        "--model_id", type=str, required=True,
+        "--generation_model_id", type=str, required=True,
         choices=list(REGISTRY.keys()),
         help="Registry key for the model to use (see REGISTRY dict)",
     )
     parser.add_argument("--batch_size", type=int, default=32, help="Global batch size before per-model scaling")
     parser.add_argument("--max_new_tokens", type=int, default=150, help="Max new tokens to generate per opinion")
-    parser.add_argument("--output_path", type=str, default="data/valueprism_generations.csv", help="Where to save results")
-    parser.add_argument("--limit", action="store_true", default=None, help="Optional row limit for debugging")
+    parser.add_argument("--output_dir", type=Path, default="generations/", help="Where to save results")
     parser.add_argument("--generation_prompt_version", type=str, default="base", choices=list(GENERATION_PROMPTS.keys()), help="Version of the prompt to use")
-    parser.add_argument("--final_run", action="store_true", help="If set, will overwrite the save and output to the final file")
-    parser.add_argument("--num_situations", type=int, default=None, help="Instead of using only high stake situations, num_situations are extracted from value prism dataset. ")
 
     return parser.parse_args()
 
@@ -67,33 +53,16 @@ def prepare_generation_prompt(row, prompt_version):
 
 def main():
     args = parse_command_line_args()
-    valueprism_df = pd.read_csv("data/valueprism_data.csv")
+    valueprism_df = pd.read_csv(args.path_dataset)
 
-    if not args.limit and args.num_situations is None:
-        raise ValueError("You must specify either --limit or --num_situations to control the number of rows processed.")
-
-    if args.limit:
-        # Keep only the rows in high-stake situations
-        valueprism_df = valueprism_df[valueprism_df["situation"].isin(HIGH_STAKE_SITUATIONS)].copy()
-    else:
-        
-        # Randomly sample num_situations from the dataset
-        # we extract num_situations from the dataset ('situation' is a repetead field, so do a set)
-        # afterwards we select all rows with those situations
-        random_situations = valueprism_df['situation'].drop_duplicates().sample(n=args.num_situations, random_state=42)
-        valueprism_df = valueprism_df[valueprism_df['situation'].isin(random_situations)].copy()
-
-    # Reset to a clean 0..n-1 index so later slicing lines up correctly
-    valueprism_df = valueprism_df.reset_index(drop=True)
-
-    spec = REGISTRY[args.model_id]
+    spec = REGISTRY[args.generation_model_id]
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model, proc = load_model(spec)
     tok = proc.tokenizer if spec.is_vlm else proc
 
     effective_batch_size = max(1, args.batch_size // spec.batch_size_divide)
-    print(f"Model: {spec.name} (key '{args.model_id}') | effective batch size: {effective_batch_size} | device: {device}")
+    print(f"Model: {spec.name} (key '{args.generation_model_id}') | effective batch size: {effective_batch_size} | device: {device}")
 
     prompts = [prepare_generation_prompt(row, args.generation_prompt_version) for _, row in valueprism_df.iterrows()]
     messages_list = [build_messages(p, spec, want_thinking=False) for p in prompts]
@@ -103,13 +72,11 @@ def main():
     # Pre-create the column so .iloc assignment inside the loop works
     valueprism_df["generated_opinion"] = pd.NA
 
-    os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
-    if args.final_run:
-        output_path = args.output_path
-    else:
-        output_path = f"{args.output_path.rstrip('.csv')}_{args.model_id}_{args.generation_prompt_version}{'_limit' if args.limit else ''}.csv"
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    output_path = args.output_dir / f"{args.generation_model_id}_{args.generation_prompt_version}.csv"
         
-    for batch_idx in tqdm(list(batch_iterable(indices, effective_batch_size)), desc=f"Generating ({args.model_id})"):
+    for batch_idx in tqdm(list(batch_iterable(indices, effective_batch_size)), desc=f"Generating ({args.generation_model_id})"):
         batch_messages = [messages_list[i] for i in batch_idx]
         batch_texts = [apply_chat_template_safe(tok, m, spec, want_thinking=False) for m in batch_messages]
 
@@ -119,10 +86,7 @@ def main():
         else:
             inputs = tok(batch_texts, return_tensors="pt", padding=True, truncation=True).to(device)
 
-        # If limit is specified, print the first input fully for debugging
-        if args.limit and batch_idx[0] == 0:
-            print("First input batch (for debugging):")
-            print(tok.batch_decode(inputs["input_ids"], skip_special_tokens=True))
+        
 
         with torch.no_grad():
             output_ids = model.generate(
