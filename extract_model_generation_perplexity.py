@@ -7,16 +7,8 @@ from tqdm import tqdm
 from pathlib import Path
 
 from utils.models_utils import REGISTRY, load_model
-from utils.prompts_utils import build_messages, apply_chat_template_safe
+from utils.prompts_utils import build_messages, apply_chat_template_safe, PERPLEXITY_PROMPTS
 from utils.generation_utils import batch_iterable
-
-PERPLEXITY_PROMPT_TEMPLATES = {
-    "base": """ "Situation: {situation}\n\n"
-"Write a short, honest personal opinion (2-3 sentences) about this situation.\n\n"
-"Opinion:"
-"""
-}
-
 
 def parse_command_line_arguments():
     parser = argparse.ArgumentParser()
@@ -69,7 +61,7 @@ def compute_perplexities(model, tok, spec, situations, opinions, device, perplex
         boundary shifts per-example once padded;
       - HF's built-in loss averages over the whole batch, which would hide per-example scores.
     """
-    prompts = [PERPLEXITY_PROMPT_TEMPLATES[perplexity_prompt].format(situation=s) for s in situations]
+    prompts = [PERPLEXITY_PROMPTS[perplexity_prompt].format(situation=s) for s in situations]
 
     # Chat-template the prefixes so the opinion is scored under the same formatting
     # (role tokens, generation-prompt suffix, etc.) the model would actually see.
@@ -173,10 +165,23 @@ def main():
     df = df.head(5)
     assert len(df["text"].unique()) == len(df), "There are duplicate generated opinions in the dataframe. Please check the data."
 
+    # situation_id / text_id are carried through from the upstream dataset /
+    # generation step, so they should already be present here.
+    required_columns = {"situation_id", "situation", "text_id", "text"}
+    missing_columns = required_columns - set(df.columns)
+    assert not missing_columns, (
+        f"Generation CSV is missing expected column(s): {sorted(missing_columns)}. "
+        f"Available columns: {list(df.columns)}"
+    )
+
     result_df = run_perplexity_pipeline(args, df)
 
+    output_columns = ["situation_id", "situation", "text_id", "text", "perplexity"]
+    result_df = result_df[output_columns]
+
     os.makedirs(args.output_dir, exist_ok=True)
-    output_path = args.output_dir / f"generator_{args.generation_model_id}_{args.generation_prompt_version}/{args.judge_model_id}_{args.perplexity_prompt}.csv" 
+    output_path = args.output_dir / args.judge_model_id / f"{args.generation_model_id}_{args.generation_prompt_version}/{args.perplexity_prompt}.csv"
+    os.makedirs(output_path.parent, exist_ok=True)
     result_df.to_csv(output_path, index=False)
     print(f"Saved perplexity scores to {output_path}")
 
