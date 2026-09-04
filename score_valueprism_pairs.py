@@ -2,12 +2,12 @@ import argparse
 import pandas as pd
 import torch
 from tqdm import tqdm
-
+from pathlib import Path
 from utils.models_utils import REGISTRY, load_model
-from utils.prompts_utils import build_messages, apply_chat_template_safe
+from utils.prompts_utils import build_messages, apply_chat_template_safe, SCORING_PROMPTS, GENERATION_PROMPTS
 from utils.generation_utils import batch_iterable
 from utils.scoring_utils import (
-    add_common_args,
+    
     resolve_output_path,
     load_generation_df,
     build_pairs,
@@ -20,7 +20,34 @@ from utils.scoring_utils import (
 
 def parse_command_line_args():
     parser = argparse.ArgumentParser()
-    add_common_args(parser)
+    parser.add_argument(
+            "--judge_model_id", type=str, required=True, choices=list(REGISTRY.keys()),
+            help="Registry key for the model used as the LLM-as-judge (scorer).",
+        )
+    parser.add_argument(
+        "--generation_model_id", type=str, choices=list(REGISTRY.keys()),
+        help="Registry key for the model whose generated opinions to load and score.",
+    )
+    parser.add_argument(
+        "--generation_prompt_version", type=str, default="base", choices=list(GENERATION_PROMPTS.keys()),
+        help="Which generation-prompt style's opinions to load and score (must match "
+                "what's actually in the generation data).",
+    )
+    parser.add_argument(
+        "--scoring_prompt_version", type=str, default="base", choices=list(SCORING_PROMPTS.keys()),
+        help="Version of the judge prompt to use.",
+    )
+    parser.add_argument("--generation_csv_path", type=str, default=None, help="Optional path to a CSV of generated opinions to score (if not using the default path).")
+    parser.add_argument("--batch_size", type=int, default=32, help="Global batch size before per-model scaling")
+    parser.add_argument("--output_dir", type=str, default="output_scores", help="Where to save results")
+    parser.add_argument("--num_examples", type=int, default=None, help="Optional limit on number of examples to score (for debugging)")
+    parser.add_argument("--option_setting", type=str, default="four", 
+                        choices=["four", "0_1"], help="The setting for the options used in the scoring part.")
+
+    parser.add_argument("--extract_ids_from", type=Path,
+                        default=None,
+                        help="Path of .csv file from where to extract the ids of the pairs to score.")
+    
     parser.add_argument("--max_new_tokens", type=int, default=5, help="Max new tokens to generate per opinion")
     return parser.parse_args()
 
@@ -50,7 +77,7 @@ def main():
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
 
-    output_path = resolve_output_path(args, script_name="greedy", limit=args.limit)
+    output_path = resolve_output_path(args)
     
     effective_batch_size = max(1, args.batch_size // spec.batch_size_divide)
     print(f"Judge: {spec.name} (key '{args.judge_model_id}') | effective batch size: {effective_batch_size} | device: {device}")
@@ -74,8 +101,8 @@ def main():
         # pairs_df rows in matching order.
         pairs_df["generated_score_1to2"] = pd.Series(generations[0::2])
         pairs_df["generated_score_2to1"] = pd.Series(generations[1::2])
-        pairs_df["judge_model_used"] = spec.name
-        pairs_df["generation_model_id"] = args.generation_model_id
+        pairs_df["judge_model"] = spec.name
+        pairs_df["generation_model"] = args.generation_model_id
         pairs_df["generation_prompt_version"] = args.generation_prompt_version
         pairs_df["parsed_score_1to2"] = pairs_df["generated_score_1to2"].apply(parse_generation_scoring, option_setting=args.option_setting)
         pairs_df["parsed_score_2to1"] = pairs_df["generated_score_2to1"].apply(parse_generation_scoring, option_setting=args.option_setting)
@@ -86,10 +113,7 @@ def main():
         batch_texts = [texts[i] for i in batch_idx]
         inputs = tokenize_for_scoring(tok, proc, spec, batch_texts, device)
 
-        # If limit is specified, print the first input fully for debugging
-        if args.limit and batch_idx[0] == 0:
-            print("First input batch (for debugging):")
-            print(tok.batch_decode(inputs["input_ids"], skip_special_tokens=True))
+        
 
         with torch.no_grad():
             output_ids = model.generate(
