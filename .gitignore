@@ -13,6 +13,7 @@ data/
 output_scores/
 model_alignment/
 model_alignment_probability/
+model_alignment_perplexity/
 scoring/
 generations
 
