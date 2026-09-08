@@ -6,8 +6,7 @@ def get_den_normalization(n:int, range_size:float):
 
     return math.floor(pow(n,2)/4*range_size)
 
-
-def calculate_rs(scores: list[list[float]],
+def calculate_rs(scores: list[list[float]], # [[esempio1_prompt01_1, esempio1_prompt01_2, ...], ]
                  range: tuple[float, float] = (0.0,1.0)) -> float:
 
     n = len(scores)
@@ -23,7 +22,7 @@ def calculate_rs(scores: list[list[float]],
     rs = 1-((1/n) * tot_sum)
     return rs
 
-def calculate_pc(scores: list[list[tuple[float, float]]],
+def calculate_pc(scores: list[list[tuple[float, float]]], # [[(esempio1_prompt01_1_1to2, esempio1_prompt01_1_2to1), (esempio1_prompt01_2_1to2, esempio1_prompt01_2_2to1) , ...], ]
                  range: tuple[float, float] = (0.0,1.0)) -> float:
 
     n = len(scores)
