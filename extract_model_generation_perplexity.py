@@ -162,7 +162,6 @@ def run_perplexity_pipeline(args, df):
 def main():
     args = parse_command_line_arguments()
     df = get_situations_and_generations(args)
-    df = df.head(5)
     assert len(df["text"].unique()) == len(df), "There are duplicate generated opinions in the dataframe. Please check the data."
 
     # situation_id / text_id are carried through from the upstream dataset /
