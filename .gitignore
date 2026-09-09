@@ -15,7 +15,10 @@ model_alignment/
 model_alignment_probability/
 model_alignment_perplexity/
 scoring/
-generations
+generations/
+lemmas/
+lemma_analysis/
+analysis_results/
 
 # SLURM Runs
 sbatch_run/
@@ -24,6 +27,7 @@ commands
 
 # Misc view scripts
 view_scores.ipynb
+try_stability.ipynb
 
 # platforms for annotation
 platforms/

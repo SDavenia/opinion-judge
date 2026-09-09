@@ -86,6 +86,7 @@ transformers==5.12.1
 triton==3.7.1
 typer==0.25.1
 typing_extensions==4.15.0
+spacy==3.8.16
 urllib3==2.7.0
 xxhash==3.8.0
 yarl==1.24.2
