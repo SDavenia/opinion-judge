@@ -20,9 +20,10 @@ Output layout:
                                                                 for that model
 
 --dataset_id selects both the input dataset (habermas or valueprism) and the
-{dataset_id} subdirectory read from --scoring_dir/--perplexity_dir/--alignment_dir
-and written under --output_dir (matching score.py / extract_model_embedded_opinion.py
-/ extract_model_generation_perplexity.py's output layout). Habermas opinions are
+{dataset_id} subdirectory read from --scoring_dir/--perplexity_dir/--alignment_dir/
+--llama_guard_dir and written under --output_dir (matching score.py /
+extract_model_embedded_opinion.py / extract_model_generation_perplexity.py /
+extract_generations_llamaguard.py's output layout). Habermas opinions are
 human-written, so --generator_model_id/--generator_prompt_version (which only name
 a generation-CSV lookup) are ignored for it.
 """
@@ -538,6 +539,7 @@ def main():
     args.scoring_dir = args.scoring_dir / args.dataset_id
     args.perplexity_dir = args.perplexity_dir / args.dataset_id
     args.alignment_dir = args.alignment_dir / args.dataset_id
+    args.llama_guard_dir = args.llama_guard_dir / args.dataset_id
     args.output_dir = args.output_dir / args.dataset_id
     args.output_dir.mkdir(parents=True, exist_ok=True)
 

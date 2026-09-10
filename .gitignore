@@ -15,6 +15,7 @@ model_alignment/
 model_alignment_probability/
 model_alignment_perplexity/
 scoring/
+safety_scores/
 generations/
 lemmas/
 lemma_analysis/

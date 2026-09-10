@@ -18,9 +18,19 @@ position), plus the greedy label and raw output, the same way as the
 single-text scorer.
 
 Usage:
-    python score_generations_llamaguard.py \
-        --path_generations generations/some_model_base.csv \
+    python extract_generations_llamaguard.py \
+        --dataset_id valueprism \
+        --generation_model_id gemma3 --generation_prompt_version base \
         --output_dir safety_scores/
+
+    python extract_generations_llamaguard.py \
+        --dataset_id habermas \
+        --output_dir safety_scores/
+
+--dataset_id selects the input generations CSV (see resolve_path_generations)
+and is appended as a subdirectory to --output_dir (matching score.py /
+extract_model_embedded_opinion.py / extract_model_generation_perplexity.py's
+output layout), unless --path_generations is given explicitly.
 
 Requires: transformers, torch, accelerate, pandas, tqdm
     pip install transformers torch accelerate pandas tqdm --break-system-packages
@@ -185,12 +195,49 @@ class LlamaGuardScorer:
             "raw_output": raw_output,
         }
 
+def resolve_path_generations(args) -> Path | None:
+    """Returns None (rather than erroring) when valueprism defaults can't be resolved,
+    so the caller can report it via parser.error for a consistent CLI error message."""
+    if args.path_generations is not None:
+        return args.path_generations
+    if args.dataset_id == "habermas":
+        # Habermas opinions are human-written and ship with 'text' already
+        # filled in -- no separate generation step/file, so we just read the
+        # prepared dataset CSV directly.
+        return Path("data/habermas_sample.csv")
+    if args.generation_model_id is None or args.generation_prompt_version is None:
+        return None
+    return args.generation_dir / f"{args.generation_model_id}_{args.generation_prompt_version}.csv"
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--path_generations", type=Path, required=True, help="Path to the generations CSV")
+    parser.add_argument(
+        "--dataset_id", type=str, required=True, choices=["habermas", "valueprism"],
+        help="Which dataset's generations to score. Selects the default --path_generations "
+             "and is appended as a subdirectory to --output_dir.",
+    )
+    parser.add_argument(
+        "--path_generations", type=Path, default=None,
+        help="Path to the generations CSV. Defaults to data/habermas_sample.csv for habermas, "
+             "or {generation_dir}/{generation_model_id}_{generation_prompt_version}.csv for valueprism.",
+    )
+    parser.add_argument("--generation_model_id", type=str, default=None,
+                         help="Only used for --dataset_id=valueprism to resolve the default --path_generations.")
+    parser.add_argument("--generation_prompt_version", type=str, default=None,
+                         help="Only used for --dataset_id=valueprism to resolve the default --path_generations.")
+    parser.add_argument("--generation_dir", type=Path, default=Path("generations/"))
     parser.add_argument("--output_dir", type=Path, default=Path("safety_scores/"), help="Where to save score CSVs")
     parser.add_argument("--num_examples", type=int, default=None, help="Optional: limit to first N examples for testing")
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.path_generations = resolve_path_generations(args)
+    if args.path_generations is None:
+        parser.error(
+            "--generation_model_id and --generation_prompt_version are required when "
+            "--dataset_id=valueprism and --path_generations is not given."
+        )
+    args.output_dir = args.output_dir / args.dataset_id
+    return args
 
 
 def main():

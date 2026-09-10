@@ -17,7 +17,7 @@ Most scripts below take a `--dataset_id` flag (`habermas` or `valueprism`) that 
 1. [prepare_data.py](prepare_data.py)
 2. [prepare_valueprism_generations.py](prepare_valueprism_generations.py) (ValuePrism only — Habermas already ships free-form human opinions in its `text` column)
 3. [score.py](score.py) (or [score_openrouter.py](score_openrouter.py) for API-based judges) — works for both datasets via `--dataset_id`
-4. [extract_model_embedded_opinion.py](extract_model_embedded_opinion.py) and [extract_model_generation_perplexity.py](extract_model_generation_perplexity.py) — two independent ways to ground a judge model's own biased position on a situation (not part of the main scoring pipeline)
+4. [extract_model_embedded_opinion.py](extract_model_embedded_opinion.py), [extract_model_generation_perplexity.py](extract_model_generation_perplexity.py), and [extract_generations_llamaguard.py](extract_generations_llamaguard.py) — independent ways to ground a judge/generator model's own bias or safety profile (not part of the main scoring pipeline)
 5. [analyse_results.py](analyse_results.py) — consumes the outputs of steps 3-4 to compute stability (RS/PC) vs. various characteristics
 
 [valueprism_clustering_all.py](valueprism_clustering_all.py) exists but is currently unused/dead code — ignored here.
@@ -73,11 +73,24 @@ For each generated opinion, computes its perplexity under a (judge) model condit
 - `--perplexity_prompt` must be a key valid for `--dataset_id`, per `PERPLEXITY_PROMPTS_BY_DATASET` in [utils/prompts_utils.py](utils/prompts_utils.py) — defaults to `base` for valueprism and `hb_base` for habermas (a parallel set of 10 `hb_*`-prefixed prompts phrased as reacting to a stated claim rather than an opinion "about" a described event).
 - **Output:** `{output_dir}/{dataset_id}/{judge_model_id}/{perplexity_prompt}.csv` for habermas, or `{output_dir}/{dataset_id}/{judge_model_id}/{generation_model_id}_{generation_prompt_version}/{perplexity_prompt}.csv` for valueprism (default `output_dir` is `model_alignment_perplexity/`). Columns: `situation_id, situation, text_id, text, perplexity`.
 
+### [extract_generations_llamaguard.py](extract_generations_llamaguard.py)
+
+Scores each unique situation and each generated/human opinion with `meta-llama/Llama-Guard-3-8B`, producing a continuous `unsafe_score` in [0,1] plus a greedy `safe`/`unsafe` label — an independent safety-guardrail signal on the generator's outputs. Takes `--dataset_id` (`habermas` or `valueprism`).
+
+- **Input:** `--path_generations`, resolved as:
+  - if given explicitly, used as-is;
+  - for `--dataset_id=habermas`: `data/habermas_sample.csv` directly (no `--generation_model_id`/`--generation_prompt_version` needed);
+  - for `--dataset_id=valueprism`: `{generation_dir}/{generation_model_id}_{generation_prompt_version}.csv` (default `generation_dir` is `generations/`) — `--generation_model_id`/`--generation_prompt_version` are then required.
+  - Must contain `situation_id, situation, text_id, text`.
+- **Output:** under `{output_dir}/{dataset_id}/` (default `output_dir` is `safety_scores/`):
+  - `situation_scores.csv` — one row per unique `situation_id`: `situation_id, unsafe_score, label, raw_output`.
+  - `opinion_scores.csv` — one row per `text_id`: `text_id, unsafe_score, label, raw_output`.
+
 ### [analyse_results.py](analyse_results.py)
 
-For each judge model found under `--scoring_dir/{dataset_id}/`, enriches its scoring CSV with per-analysis characteristic columns (text length; perplexity, read from `--perplexity_dir`; judge's own embedded-opinion alignment, read from `--alignment_dir`), bins pairs by each characteristic, and computes stability (RS) and positional consistency (PC) per bin. Takes `--dataset_id` (`habermas` or `valueprism`), which is appended as a subdirectory to `--scoring_dir`, `--perplexity_dir`, `--alignment_dir`, and `--output_dir` alike (e.g. `scoring/habermas/`, `model_alignment_perplexity/habermas/`, `analysis_results/habermas/`).
+For each judge model found under `--scoring_dir/{dataset_id}/`, enriches its scoring CSV with per-analysis characteristic columns (text length; perplexity, read from `--perplexity_dir`; judge's own embedded-opinion alignment, read from `--alignment_dir`; Llama-Guard unsafe scores, read from `--llama_guard_dir`), bins pairs by each characteristic, and computes stability (RS) and positional consistency (PC) per bin. Takes `--dataset_id` (`habermas` or `valueprism`), which is appended as a subdirectory to `--scoring_dir`, `--perplexity_dir`, `--alignment_dir`, `--llama_guard_dir`, and `--output_dir` alike (e.g. `scoring/habermas/`, `model_alignment_perplexity/habermas/`, `safety_scores/habermas/`, `analysis_results/habermas/`).
 
-- **Input:** scoring CSVs from [score.py](score.py)/[score_openrouter.py](score_openrouter.py) under `{scoring_dir}/{dataset_id}/`, perplexity CSVs from [extract_model_generation_perplexity.py](extract_model_generation_perplexity.py) under `{perplexity_dir}/{dataset_id}/`, and alignment CSVs from [extract_model_embedded_opinion.py](extract_model_embedded_opinion.py) under `{alignment_dir}/{dataset_id}/`. For `--dataset_id=valueprism`, scoring/perplexity filenames are further keyed by `--generator_model_id`/`--generator_prompt_version`; for `--dataset_id=habermas` those flags are ignored (human-written opinions have no generator).
+- **Input:** scoring CSVs from [score.py](score.py)/[score_openrouter.py](score_openrouter.py) under `{scoring_dir}/{dataset_id}/`, perplexity CSVs from [extract_model_generation_perplexity.py](extract_model_generation_perplexity.py) under `{perplexity_dir}/{dataset_id}/`, alignment CSVs from [extract_model_embedded_opinion.py](extract_model_embedded_opinion.py) under `{alignment_dir}/{dataset_id}/`, and Llama-Guard CSVs from [extract_generations_llamaguard.py](extract_generations_llamaguard.py) under `{llama_guard_dir}/{dataset_id}/`. For `--dataset_id=valueprism`, scoring/perplexity filenames are further keyed by `--generator_model_id`/`--generator_prompt_version`; for `--dataset_id=habermas` those flags are ignored (human-written opinions have no generator).
 - **Output:** `{output_dir}/{dataset_id}/{analysis_type}/{characteristic}.png` (RS & PC vs. the characteristic, one line per judge model) and `{output_dir}/{dataset_id}/{analysis_type}/{judge_model_id}/{characteristic}.csv` (per-bin RS/PC for that model). Default `output_dir` is `analysis_results/`.
 
 ## Shared code
