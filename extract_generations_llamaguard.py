@@ -227,7 +227,7 @@ def parse_args():
     parser.add_argument("--generation_prompt_version", type=str, default=None,
                          help="Only used for --dataset_id=valueprism to resolve the default --path_generations.")
     parser.add_argument("--generation_dir", type=Path, default=Path("generations/"))
-    parser.add_argument("--output_dir", type=Path, default=Path("safety_scores/"), help="Where to save score CSVs")
+    parser.add_argument("--output_dir", type=Path, default=Path("safety_scores_llamaguard_generations/"), help="Where to save score CSVs")
     parser.add_argument("--num_examples", type=int, default=None, help="Optional: limit to first N examples for testing")
     args = parser.parse_args()
     args.path_generations = resolve_path_generations(args)

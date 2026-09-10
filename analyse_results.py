@@ -77,7 +77,7 @@ def parse_command_line_args():
     # Emotion characteristics args
 
     # llama-guard generation args
-    parser.add_argument("--llama_guard_dir", type=Path, default="safety_scores/")
+    parser.add_argument("--llama_guard_dir", type=Path, default="safety_scores_llamaguard_generations/")
 
     # ...
 
