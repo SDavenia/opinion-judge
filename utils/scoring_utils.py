@@ -49,7 +49,7 @@ def load_generation_df(args):
     if args.generation_csv_path:
         path = args.generation_csv_path
     else:
-        path = f"data/valueprism_generation_{args.generation_model_id}_{args.generation_prompt_version}.csv"
+        path = f"generations/valueprism_generation_{args.generation_model_id}_{args.generation_prompt_version}.csv"
 
     df = pd.read_csv(path)
     before = len(df)
@@ -155,6 +155,9 @@ def tokenize_for_scoring(tok, proc, spec, texts, device):
 def parse_generation_scoring(generation: str,
                               option_setting: str = None,
                               decimals: int = 1) -> str | float | None:
+
+    if generation is None or generation == "":
+        return None
 
     if option_setting is None:
         option_setting = "four"
