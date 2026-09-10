@@ -59,6 +59,7 @@ def parse_command_line_args():
     # Emotion characteristics args
 
     # llama-guard generation args
+    parser.add_argument("--llama_guard_dir", type=Path, default="safety_scores/")
 
     # ...
 
@@ -379,7 +380,101 @@ EMOTION_SPEC = None
 
 # [GEN] [score] Safety-guardrails - Llama-Guard probability of "safe" on the
 # generator's generations.
-LLAMA_GUARD_GENERATOR_SPEC = None
+
+def enrich_llamaguard(
+    scoring_df: pd.DataFrame, args, judge_model_id
+) -> pd.DataFrame | None:
+
+    # Situation scores
+    path_llama_situation = args.llama_guard_dir / "situation_scores.csv"
+    if not path_llama_situation.is_file():
+        return None
+
+    df_llama_situations = pd.read_csv(path_llama_situation)
+
+    df_llama_situations = df_llama_situations.rename(
+        columns={"unsafe_score": "unsafe_score_situation"}
+    )
+
+    df = scoring_df.merge(
+        df_llama_situations[["situation_id", "unsafe_score_situation"]],
+        left_on="situation_id_1",
+        right_on="situation_id",
+        how="left",
+    )
+
+    # Opinion scores
+    path_llama_opinion = args.llama_guard_dir / "opinion_scores.csv"
+    if not path_llama_opinion.is_file():
+        return None
+
+    df_llama_opinions = pd.read_csv(path_llama_opinion)
+
+    print("Opinion CSV columns:", df_llama_opinions.columns.tolist())
+    print("Scoring DF columns:", df.columns.tolist())
+
+    # Make sure the source column has the expected name.
+    df_llama_opinions = df_llama_opinions.rename(
+        columns={"unsafe_score": "unsafe_score_opinion"}
+    )
+
+    df = df.merge(
+        df_llama_opinions[
+            ["text_id", "unsafe_score_opinion"]
+        ].rename(
+            columns={
+                "text_id": "text_id_1",
+                "unsafe_score_opinion": "unsafe_score_opinion_1",
+            }
+        ),
+        on="text_id_1",
+        how="left",
+    )
+
+    df = df.merge(
+        df_llama_opinions[
+            ["text_id", "unsafe_score_opinion"]
+        ].rename(
+            columns={
+                "text_id": "text_id_2",
+                "unsafe_score_opinion": "unsafe_score_opinion_2",
+            }
+        ),
+        on="text_id_2",
+        how="left",
+    )
+
+    # print(df.head(10))
+    # print("Final columns:", df.columns.tolist())
+
+    df["avg_unsafe_score_opinion"] = (
+        df["unsafe_score_opinion_1"]
+        + df["unsafe_score_opinion_2"]
+    ) / 2
+
+    df["max_unsafe_score_opinion"] = df[
+        ["unsafe_score_opinion_1", "unsafe_score_opinion_2"]
+    ].max(axis=1)
+
+    df["min_unsafe_score_opinion"] = df[
+        ["unsafe_score_opinion_1", "unsafe_score_opinion_2"]
+    ].min(axis=1)
+
+    df["diff_unsafe_score_opinion"] = (
+        df["unsafe_score_opinion_1"]
+        - df["unsafe_score_opinion_2"]
+    ).abs()
+
+    return df
+
+LLAMA_GUARD_CHARACTERISTICS = {
+    "avg_unsafe_score_opinion": "Average Llama-guard Unsafe Score for opinion",
+    "max_unsafe_score_opinion": "Maximum Llama-guard Unsafe Score for opinion",
+    "min_unsafe_score_opinion": "Minimum Llama-guard Unsafe Score for opinion",
+    "diff_unsafe_score_opinion": "Perplexity Llama-guard Unsafe Score for opinion",
+    "unsafe_score_situation": "Llama-guard Unsafe Score for situation"
+
+}
 
 # [SIT] [score] Safety-guardrails - judge model's probability of a refusal-
 # to-comply option (+ similarity to Arditi et al.'s refusal direction).
@@ -396,7 +491,8 @@ ANALYSIS_REGISTRY = {
     "alignment": {"enrich": enrich_alignment, "characteristics": ALIGNMENT_CHARACTERISTICS},
     "lexicon": LEXICON_SPEC,
     "emotion": EMOTION_SPEC,
-    "llama_guard_generator": LLAMA_GUARD_GENERATOR_SPEC,
+    "llama_guard_generator": {"enrich": enrich_llamaguard,
+                "characteristics": LLAMA_GUARD_CHARACTERISTICS},
     "refusal": REFUSAL_SPEC,
     "llama_guard_judge": LLAMA_GUARD_JUDGE_SPEC,
 }
