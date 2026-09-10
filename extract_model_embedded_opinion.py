@@ -6,7 +6,9 @@ from tqdm import tqdm
 from utils.models_utils import load_model, REGISTRY
 from pathlib import Path
 
-from utils.prompts_utils import build_messages, apply_chat_template_safe, ALIGNMENT_PROMPTS
+from utils.prompts_utils import (
+    build_messages, apply_chat_template_safe, ALIGNMENT_PROMPTS, ALIGNMENT_PROMPTS_BY_DATASET, LABEL_MAPPING,
+)
 from utils.generation_utils import batch_iterable
 import re
 import os
@@ -14,30 +16,38 @@ import os
 
 def parse_command_line_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--dataset_id", type=str, required=True, choices=["habermas", "valueprism"],
+        help="Which prepared dataset's situations to probe.",
+    )
     parser.add_argument("--judge_model_id", type=str, default="llama-3.2-1b", help="Model ID to use for judging that we need to extract the embedded opinion from")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size for generation")
     parser.add_argument("--max_new_tokens", type=int, default=20, help="Max new tokens to generate per opinion")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for generation")
     parser.add_argument("--n_samples", type=int, default=5, help="Number of times to repeat the generation for each situation")
 
-    parser.add_argument("--path_dataset", type=Path, required=True)
+    parser.add_argument("--path_dataset", type=Path, default=None,
+                        help="Path of dataset to use. Defaults to data/{dataset_id}_sample.csv.")
     parser.add_argument("--output_dir", type=Path, default="model_alignment", help="Directory to save the output CSV and JSON files")
-    parser.add_argument("--alignment_prompt_version", type=str, default="impartial_evaluator", help="Version of the prompt to use for parsing generations")
-    return parser.parse_args()
+    parser.add_argument(
+        "--alignment_prompt_version", type=str, default=None,
+        help="Version of the prompt to use for parsing generations. Must be valid for "
+             f"--dataset_id (see ALIGNMENT_PROMPTS_BY_DATASET). Defaults to "
+             "'impartial_evaluator' for valueprism, 'hb_impartial_evaluator' for habermas.",
+    )
+    args = parser.parse_args()
+    if args.path_dataset is None:
+        args.path_dataset = Path(f"data/{args.dataset_id}_sample.csv")
+    if args.alignment_prompt_version is None:
+        args.alignment_prompt_version = ALIGNMENT_PROMPTS_BY_DATASET[args.dataset_id][0]
+    elif args.alignment_prompt_version not in ALIGNMENT_PROMPTS_BY_DATASET[args.dataset_id]:
+        parser.error(
+            f"--alignment_prompt_version={args.alignment_prompt_version!r} is not valid for "
+            f"--dataset_id={args.dataset_id!r}. Valid options: "
+            f"{ALIGNMENT_PROMPTS_BY_DATASET[args.dataset_id]}"
+        )
+    return args
 
-
-LABEL_MAPPING = {
-    "impartial_evaluator": ["ACCEPTABLE", "UNACCEPTABLE", "AMBIGUOUS"],
-    "acceptability_evaluator": ["ACCEPTABLE", "UNACCEPTABLE", "AMBIGUOUS"],
-    "choice": ["YES", "NO", "UNSURE"],
-    "agree_disagree": ["AGREE", "DISAGREE", "NEUTRAL"],
-    "personal_stance": ["I WOULD", "I WOULD NOT", "UNSURE"],
-    "societal_norm": ["ACCEPTED", "CONDEMNED", "MIXED"],
-    "likert_5": ["STRONGLY_DISAGREE", "DISAGREE", "NEUTRAL", "AGREE", "STRONGLY_AGREE"],
-    "permissibility": ["PERMISSIBLE", "IMPERMISSIBLE", "AMBIGUOUS"],
-    "condemnation": ["CONDEMN", "NOT_CONDEMN", "MIXED"],
-    "gut_reaction": ["POSITIVE", "NEGATIVE", "MIXED"],
-}
 
 def prepare_alignment_prompt(situation, prompt_version, n_samples):
         prompt = ALIGNMENT_PROMPTS[prompt_version].format(
@@ -91,7 +101,7 @@ def get_situations(args):
 
 def main():
     args = parse_command_line_args()
-    os.makedirs(args.output_dir / args.judge_model_id, exist_ok=True)
+    os.makedirs(args.output_dir / args.dataset_id / args.judge_model_id, exist_ok=True)
 
     spec = REGISTRY[args.judge_model_id]
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -147,7 +157,7 @@ def main():
         "parsed_evaluations": parsed_generations
     })
 
-    path_csv = f"{args.output_dir}/{args.judge_model_id}/{args.alignment_prompt_version}_generations.csv"
+    path_csv = f"{args.output_dir}/{args.dataset_id}/{args.judge_model_id}/{args.alignment_prompt_version}_generations.csv"
     print(f"Saving generations and parsed evaluations to {path_csv}")
     #create the directory if it doesn't exist
     os.makedirs(os.path.dirname(path_csv), exist_ok=True)
@@ -200,7 +210,7 @@ def main():
         print(f"Total GPU memory allocated: {total_allocated:.2f} MB")
         print(f"Total GPU memory reserved: {total_reserved:.2f} MB")
 
-    path_distribution_csv = f"{args.output_dir}/{args.judge_model_id}/{args.alignment_prompt_version}.csv"
+    path_distribution_csv = f"{args.output_dir}/{args.dataset_id}/{args.judge_model_id}/{args.alignment_prompt_version}.csv"
     print(f"Saving alignment distributions to {path_distribution_csv}")
     distribution_df = pd.DataFrame(output_rows)
     # alignment_distribution is written out via json.dumps so the cell is a

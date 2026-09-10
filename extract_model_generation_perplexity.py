@@ -7,19 +7,31 @@ from tqdm import tqdm
 from pathlib import Path
 
 from utils.models_utils import REGISTRY, load_model
-from utils.prompts_utils import build_messages, apply_chat_template_safe, PERPLEXITY_PROMPTS
+from utils.prompts_utils import (
+    build_messages, apply_chat_template_safe, PERPLEXITY_PROMPTS, PERPLEXITY_PROMPTS_BY_DATASET,
+)
 from utils.generation_utils import batch_iterable
 
 def parse_command_line_arguments():
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--dataset_id", type=str, required=True, choices=["habermas", "valueprism"],
+        help="Which prepared dataset's generations to compute perplexity for. 'habermas' "
+             "opinions are human-written, so --generation_model_id/--generation_prompt_version "
+             "are ignored and data/habermas_sample.csv is read directly.",
+    )
     parser.add_argument("--generation_model_id", type=str, default="llama-3.2-1b",
                          help="Model ID to use for generating the embedded opinion")
     parser.add_argument("--generation_prompt_version", type=str)
     parser.add_argument("--generation_dir", type=Path, default="generations/")
     parser.add_argument("--judge_model_id", type=str, default="llama-3.2-1b",
                          help="Model ID to use for judging that we need to extract the embedded opinion from")
-    
-    parser.add_argument("--perplexity_prompt", type=str, default="base")
+
+    parser.add_argument(
+        "--perplexity_prompt", type=str, default=None,
+        help="Must be valid for --dataset_id (see PERPLEXITY_PROMPTS_BY_DATASET). Defaults "
+             "to 'base' for valueprism, 'hb_base' for habermas.",
+    )
 
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size for generation")
     parser.add_argument("--max_length", type=int, default=512,
@@ -27,11 +39,27 @@ def parse_command_line_arguments():
     parser.add_argument("--output_dir", type=Path, default="model_alignment_perplexity",
                          help="Where to write the CSV with a 'perplexity' column.")
     args = parser.parse_args()
+    if args.dataset_id == "valueprism" and args.generation_prompt_version is None:
+        parser.error("--generation_prompt_version is required when --dataset_id=valueprism")
+    if args.perplexity_prompt is None:
+        args.perplexity_prompt = PERPLEXITY_PROMPTS_BY_DATASET[args.dataset_id][0]
+    elif args.perplexity_prompt not in PERPLEXITY_PROMPTS_BY_DATASET[args.dataset_id]:
+        parser.error(
+            f"--perplexity_prompt={args.perplexity_prompt!r} is not valid for "
+            f"--dataset_id={args.dataset_id!r}. Valid options: "
+            f"{PERPLEXITY_PROMPTS_BY_DATASET[args.dataset_id]}"
+        )
     return args
 
 
 def get_situations_and_generations(args):
-    generation_df_path = args.generation_dir / f"{args.generation_model_id}_{args.generation_prompt_version}.csv"
+    if args.dataset_id == "habermas":
+        # Habermas opinions are human-written and ship with 'text' already filled
+        # in -- no separate generation step/file, so we just read the prepared
+        # dataset CSV directly.
+        generation_df_path = Path("data/habermas_sample.csv")
+    else:
+        generation_df_path = args.generation_dir / f"{args.generation_model_id}_{args.generation_prompt_version}.csv"
     generation_df = pd.read_csv(generation_df_path)
     return generation_df
 
@@ -178,8 +206,10 @@ def main():
     output_columns = ["situation_id", "situation", "text_id", "text", "perplexity"]
     result_df = result_df[output_columns]
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    output_path = args.output_dir / args.judge_model_id / f"{args.generation_model_id}_{args.generation_prompt_version}/{args.perplexity_prompt}.csv"
+    if args.dataset_id == "habermas":
+        output_path = args.output_dir / args.dataset_id / args.judge_model_id / f"{args.perplexity_prompt}.csv"
+    else:
+        output_path = args.output_dir / args.dataset_id / args.judge_model_id / f"{args.generation_model_id}_{args.generation_prompt_version}/{args.perplexity_prompt}.csv"
     os.makedirs(output_path.parent, exist_ok=True)
     result_df.to_csv(output_path, index=False)
     print(f"Saved perplexity scores to {output_path}")

@@ -46,6 +46,12 @@ client = OpenAI(
 def parse_command_line_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--dataset_id", type=str, required=True, choices=["habermas", "valueprism"],
+        help="Which prepared dataset to score. 'habermas' opinions are human-written "
+             "(no --generation_model_id/--generation_prompt_version needed); 'valueprism' "
+             "opinions come from a generations CSV keyed by those two flags.",
+    )
+    parser.add_argument(
         "--judge_model_id", type=str, required=True,
         help="OpenRouter model slug for the judge, e.g. "
              "'anthropic/claude-3.5-sonnet' or 'meta-llama/llama-3.3-70b-instruct'.",
@@ -53,7 +59,8 @@ def parse_command_line_args():
     parser.add_argument(
         "--generation_model_id", type=str, default=None,
         help="Identifier for the model whose generated opinions to load and score "
-             "(used only for locating/labeling the generation file, not for API calls).",
+             "(used only for locating/labeling the generation file, not for API calls). "
+             "Required when --dataset_id=valueprism (unless --generation_csv_path is given).",
     )
     parser.add_argument(
         "--generation_prompt_version", type=str, default="base", choices=list(GENERATION_PROMPTS.keys()),
@@ -111,6 +118,12 @@ def call_openrouter(model: str, prompt: str, max_tokens: int, temperature: float
 def main():
     args = parse_command_line_args()
 
+    if args.dataset_id == "valueprism" and args.generation_model_id is None and args.generation_csv_path is None:
+        raise ValueError(
+            "--generation_model_id is required when --dataset_id=valueprism "
+            "(unless --generation_csv_path is given)."
+        )
+
     gen_df = load_generation_df(args)
     pairs_df = build_pairs(gen_df)
 
@@ -141,8 +154,8 @@ def main():
         pairs_df["generated_score_1to2"] = pd.Series(generations[0::2])
         pairs_df["generated_score_2to1"] = pd.Series(generations[1::2])
         pairs_df["judge_model"] = args.judge_model_id
-        pairs_df["generation_model"] = args.generation_model_id
-        pairs_df["generation_prompt_version"] = args.generation_prompt_version
+        pairs_df["generation_model"] = args.generation_model_id if args.dataset_id == "valueprism" else "human"
+        pairs_df["generation_prompt_version"] = args.generation_prompt_version if args.dataset_id == "valueprism" else None
         pairs_df["parsed_score_1to2"] = pairs_df["generated_score_1to2"].apply(
             parse_generation_scoring, option_setting=args.option_setting
         )

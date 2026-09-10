@@ -394,7 +394,7 @@ def prepare_habermas(output_dir: Path, max_situations: int) -> None:
     )
     merged["dataset"] = "habermas"
 
-    out_cols = ["situation_id", "text_id", "situation", "stance", "stance_group", "hb_participant_id", "dataset"]
+    out_cols = ["situation_id", "text_id", "situation", "stance", "stance_group", "hb_participant_id", "text", "dataset"]
     merged = merged[out_cols]
 
     out_path = output_dir / "habermas_sample.csv"

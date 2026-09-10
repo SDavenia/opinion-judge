@@ -21,27 +21,34 @@ from utils.scoring_utils import (
 def parse_command_line_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--dataset_id", type=str, required=True, choices=["habermas", "valueprism"],
+        help="Which prepared dataset to score. 'habermas' opinions are human-written "
+             "(no --generation_model_id/--generation_prompt_version needed); 'valueprism' "
+             "opinions come from a generations CSV keyed by those two flags.",
+    )
+    parser.add_argument(
             "--judge_model_id", type=str, required=True, choices=list(REGISTRY.keys()),
             help="Registry key for the model used as the LLM-as-judge (scorer).",
         )
     parser.add_argument(
         "--generation_model_id", type=str, choices=list(REGISTRY.keys()),
-        help="Registry key for the model whose generated opinions to load and score.",
+        help="Registry key for the model whose generated opinions to load and score. "
+             "Required when --dataset_id=valueprism (unless --generation_csv_path is given).",
     )
     parser.add_argument(
-        "--generation_prompt_version", type=str, default="base", choices=list(GENERATION_PROMPTS.keys()),
+        "--generation_prompt_version", type=str, default="reflective_person", choices=list(GENERATION_PROMPTS.keys()),
         help="Which generation-prompt style's opinions to load and score (must match "
                 "what's actually in the generation data).",
     )
     parser.add_argument(
-        "--scoring_prompt_version", type=str, default="base", choices=list(SCORING_PROMPTS.keys()),
+        "--scoring_prompt_version", type=str, default="0_1", choices=list(SCORING_PROMPTS.keys()),
         help="Version of the judge prompt to use.",
     )
     parser.add_argument("--generation_csv_path", type=str, default=None, help="Optional path to a CSV of generated opinions to score (if not using the default path).")
     parser.add_argument("--batch_size", type=int, default=32, help="Global batch size before per-model scaling")
-    parser.add_argument("--output_dir", type=str, default="output_scores", help="Where to save results")
+    parser.add_argument("--output_dir", type=str, default="scoring", help="Where to save results")
     parser.add_argument("--num_examples", type=int, default=None, help="Optional limit on number of examples to score (for debugging)")
-    parser.add_argument("--option_setting", type=str, default="four", 
+    parser.add_argument("--option_setting", type=str, default="0_1", 
                         choices=["four", "0_1"], help="The setting for the options used in the scoring part.")
 
     parser.add_argument("--extract_ids_from", type=Path,
@@ -54,6 +61,12 @@ def parse_command_line_args():
 
 def main():
     args = parse_command_line_args()
+
+    if args.dataset_id == "valueprism" and args.generation_model_id is None and args.generation_csv_path is None:
+        raise ValueError(
+            "--generation_model_id is required when --dataset_id=valueprism "
+            "(unless --generation_csv_path is given)."
+        )
 
     gen_df = load_generation_df(args)
     pairs_df = build_pairs(gen_df)
@@ -102,8 +115,8 @@ def main():
         pairs_df["generated_score_1to2"] = pd.Series(generations[0::2])
         pairs_df["generated_score_2to1"] = pd.Series(generations[1::2])
         pairs_df["judge_model"] = spec.name
-        pairs_df["generation_model"] = args.generation_model_id
-        pairs_df["generation_prompt_version"] = args.generation_prompt_version
+        pairs_df["generation_model"] = args.generation_model_id if args.dataset_id == "valueprism" else "human"
+        pairs_df["generation_prompt_version"] = args.generation_prompt_version if args.dataset_id == "valueprism" else None
         pairs_df["parsed_score_1to2"] = pairs_df["generated_score_1to2"].apply(parse_generation_scoring, option_setting=args.option_setting)
         pairs_df["parsed_score_2to1"] = pairs_df["generated_score_2to1"].apply(parse_generation_scoring, option_setting=args.option_setting)
 

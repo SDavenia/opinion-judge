@@ -10,13 +10,21 @@ length, or read from the relevant results folder, e.g. perplexity/alignment),
 binned along each characteristic, and RS/PC are computed per bin.
 
 Output layout:
-    {output_dir}/{analysis_type}/{characteristic}.png       - RS & PC vs. the
+    {output_dir}/{dataset_id}/{analysis_type}/{characteristic}.png
+                                                              - RS & PC vs. the
                                                                 characteristic,
                                                                 one line per
                                                                 judge model
-    {output_dir}/{analysis_type}/{judge_model_id}/{characteristic}.csv
+    {output_dir}/{dataset_id}/{analysis_type}/{judge_model_id}/{characteristic}.csv
                                                               - per-bin RS/PC
                                                                 for that model
+
+--dataset_id selects both the input dataset (habermas or valueprism) and the
+{dataset_id} subdirectory read from --scoring_dir/--perplexity_dir/--alignment_dir
+and written under --output_dir (matching score.py / extract_model_embedded_opinion.py
+/ extract_model_generation_perplexity.py's output layout). Habermas opinions are
+human-written, so --generator_model_id/--generator_prompt_version (which only name
+a generation-CSV lookup) are ignored for it.
 """
 import argparse
 import json
@@ -29,6 +37,7 @@ import numpy as np
 import pandas as pd
 
 from utils.evaluation_utils import calculate_pc_from_df, calculate_rs_from_df
+from utils.prompts_utils import LABEL_MAPPING, CATEGORY_MAPPING
 
 SCORING_DF_COLUMNS = [
     "id_1", "situation_id_1", "text_id_1", "stance_1", "text_1",
@@ -40,6 +49,14 @@ SCORING_DF_COLUMNS = [
 def parse_command_line_args():
     parser = argparse.ArgumentParser()
     # General args
+    parser.add_argument(
+        "--dataset_id", type=str, required=True, choices=["habermas", "valueprism"],
+        help="Which dataset's scoring/perplexity/alignment results to analyse. Selects the "
+             "{dataset_id} subdirectory under --scoring_dir/--perplexity_dir/--alignment_dir "
+             "and --output_dir.",
+    )
+    # Only used for --dataset_id=valueprism (habermas scoring files have no
+    # generator prefix, since the opinions are human-written).
     parser.add_argument("--generator_model_id", type=str, default="llama-3.3-70b")
     parser.add_argument("--generator_prompt_version", type=str, default="reflective_person")
     parser.add_argument("--scoring_prompt_version", type=str, default="0_1")
@@ -76,10 +93,18 @@ def parse_command_line_args():
 # Data loading
 # ---------------------------------------------------------------------------
 
+def _scoring_prefix(args) -> str:
+    """Habermas scoring files have no generator prefix (human-written opinions,
+    see score.py's resolve_output_path); valueprism ones do."""
+    if args.dataset_id == "habermas":
+        return ""
+    return f"{args.generator_model_id}_{args.generator_prompt_version}_"
+
+
 def discover_judge_model_ids(args) -> list[str]:
     """Judge models are whatever scoring CSVs exist for this generator/prompt,
     rather than a hardcoded list, so newly-scored judges are picked up automatically."""
-    prefix = f"{args.generator_model_id}_{args.generator_prompt_version}_"
+    prefix = _scoring_prefix(args)
     suffix = f"_{args.scoring_prompt_version}.csv"
     judge_model_ids = []
     for f in sorted(args.scoring_dir.glob(f"{prefix}*{suffix}")):
@@ -90,10 +115,7 @@ def discover_judge_model_ids(args) -> list[str]:
 
 
 def load_scoring_df(args, judge_model_id: str) -> pd.DataFrame | None:
-    path = args.scoring_dir / (
-        f"{args.generator_model_id}_{args.generator_prompt_version}_"
-        f"{judge_model_id}_{args.scoring_prompt_version}.csv"
-    )
+    path = args.scoring_dir / f"{_scoring_prefix(args)}{judge_model_id}_{args.scoring_prompt_version}.csv"
     if not path.exists():
         return None
     return pd.read_csv(path)[SCORING_DF_COLUMNS]
@@ -187,11 +209,16 @@ TEXT_CHARACTERISTICS = {
 # ---------------------------------------------------------------------------
 
 def load_perplexity_df(args, judge_model_id: str) -> pd.DataFrame | None:
-    path = (
-        args.perplexity_dir / judge_model_id
-        / f"{args.generator_model_id}_{args.generator_prompt_version}"
-        / f"{args.perplexity_prompt_version}.csv"
-    )
+    if args.dataset_id == "habermas":
+        # No generator subdir -- habermas opinions are human-written, see
+        # extract_model_generation_perplexity.py's output layout.
+        path = args.perplexity_dir / judge_model_id / f"{args.perplexity_prompt_version}.csv"
+    else:
+        path = (
+            args.perplexity_dir / judge_model_id
+            / f"{args.generator_model_id}_{args.generator_prompt_version}"
+            / f"{args.perplexity_prompt_version}.csv"
+        )
     if not path.exists():
         return None
     return pd.read_csv(path)[["text_id", "perplexity"]]
@@ -242,38 +269,6 @@ PERPLEXITY_CHARACTERISTICS = {
 # are collapsed onto a shared {positive, negative, neutral} schema (A/U/N in
 # the notes) and averaged across evaluators, per situation.
 # ---------------------------------------------------------------------------
-
-LABEL_MAPPING = {
-    "impartial_evaluator": ["ACCEPTABLE", "UNACCEPTABLE", "AMBIGUOUS"],
-    "acceptability_evaluator": ["ACCEPTABLE", "UNACCEPTABLE", "AMBIGUOUS"],
-    "choice": ["YES", "NO", "UNSURE"],
-    "agree_disagree": ["AGREE", "DISAGREE", "NEUTRAL"],
-    "personal_stance": ["I WOULD", "I WOULD NOT", "UNSURE"],
-    "societal_norm": ["ACCEPTED", "CONDEMNED", "MIXED"],
-    "likert_5": ["STRONGLY_DISAGREE", "DISAGREE", "NEUTRAL", "AGREE", "STRONGLY_AGREE"],
-    "permissibility": ["PERMISSIBLE", "IMPERMISSIBLE", "AMBIGUOUS"],
-    "condemnation": ["CONDEMN", "NOT_CONDEMN", "MIXED"],
-    "gut_reaction": ["POSITIVE", "NEGATIVE", "MIXED"],
-}
-
-# raw label -> {"positive", "negative", "neutral"} (i.e. A / U / N)
-CATEGORY_MAPPING = {
-    "impartial_evaluator": {"ACCEPTABLE": "positive", "UNACCEPTABLE": "negative", "AMBIGUOUS": "neutral"},
-    "acceptability_evaluator": {"ACCEPTABLE": "positive", "UNACCEPTABLE": "negative", "AMBIGUOUS": "neutral"},
-    "choice": {"YES": "positive", "NO": "negative", "UNSURE": "neutral"},
-    "agree_disagree": {"AGREE": "positive", "DISAGREE": "negative", "NEUTRAL": "neutral"},
-    "personal_stance": {"I WOULD": "positive", "I WOULD NOT": "negative", "UNSURE": "neutral"},
-    "societal_norm": {"ACCEPTED": "positive", "CONDEMNED": "negative", "MIXED": "neutral"},
-    "likert_5": {
-        "STRONGLY_DISAGREE": "negative", "DISAGREE": "negative",
-        "NEUTRAL": "neutral",
-        "AGREE": "positive", "STRONGLY_AGREE": "positive",
-    },
-    "permissibility": {"PERMISSIBLE": "positive", "IMPERMISSIBLE": "negative", "AMBIGUOUS": "neutral"},
-    "condemnation": {"CONDEMN": "negative", "NOT_CONDEMN": "positive", "MIXED": "neutral"},
-    "gut_reaction": {"POSITIVE": "positive", "NEGATIVE": "negative", "MIXED": "neutral"},
-}
-
 
 def infer_evaluator_type(filename: str) -> str:
     """Match a filename to a LABEL_MAPPING key. Picks the longest match to
@@ -444,14 +439,20 @@ def run_analysis(analysis_type: str, spec: dict | None, args, judge_model_ids: l
 
 def main():
     args = parse_command_line_args()
+    args.scoring_dir = args.scoring_dir / args.dataset_id
+    args.perplexity_dir = args.perplexity_dir / args.dataset_id
+    args.alignment_dir = args.alignment_dir / args.dataset_id
+    args.output_dir = args.output_dir / args.dataset_id
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     judge_model_ids = discover_judge_model_ids(args)
     if not judge_model_ids:
-        raise SystemExit(
-            f"No scoring files found for generator={args.generator_model_id!r}, "
-            f"prompt={args.generator_prompt_version!r} in {args.scoring_dir}"
-        )
+        if args.dataset_id == "valueprism":
+            raise SystemExit(
+                f"No scoring files found for generator={args.generator_model_id!r}, "
+                f"prompt={args.generator_prompt_version!r} in {args.scoring_dir}"
+            )
+        raise SystemExit(f"No scoring files found in {args.scoring_dir}")
     print(f"Judge models: {judge_model_ids}")
 
     for analysis_type, spec in ANALYSIS_REGISTRY.items():

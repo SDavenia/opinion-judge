@@ -12,9 +12,14 @@ def resolve_output_path(args,
     # For final run, the generator id is not included (since we will have determined a best generator), while for all others it is.
     """
 
-    
-    path = f"{args.output_dir}/{args.generation_model_id}_{args.generation_prompt_version}_{args.judge_model_id}_{args.scoring_prompt_version}.csv"
-        
+    if args.dataset_id == "habermas":
+        # Habermas opinions are human-written, so there is no generator model/prompt to name.
+        filename = f"{args.judge_model_id}_{args.scoring_prompt_version}.csv"
+    else:
+        filename = f"{args.generation_model_id}_{args.generation_prompt_version}_{args.judge_model_id}_{args.scoring_prompt_version}.csv"
+
+    path = f"{args.output_dir}/{args.dataset_id}/{filename}"
+
     os.makedirs(os.path.dirname(path), exist_ok=True)
     return path
 
@@ -45,14 +50,25 @@ def load_generation_df(args):
     # If final run, the generator model name & prompt are not included.
     """
 
-    
     if args.generation_csv_path:
         path = args.generation_csv_path
+    elif args.dataset_id == "habermas":
+        # Habermas opinions are human-written and ship with 'text' already filled
+        # in -- no separate generation step/file, so we just read the prepared
+        # dataset CSV directly.
+        path = "data/habermas_sample.csv"
     else:
-        path = f"generations/valueprism_generation_{args.generation_model_id}_{args.generation_prompt_version}.csv"
+        path = f"generations/{args.generation_model_id}_{args.generation_prompt_version}.csv"
 
     df = pd.read_csv(path)
     before = len(df)
+
+    if args.dataset_id == "habermas":
+        # No 'generation_model' / 'generation_prompt_version' columns to filter by --
+        # every row is a genuine human opinion.
+        df = df.reset_index(drop=True)
+        print(f"Loaded {path}: {len(df)} rows (habermas -- no generator to filter by).")
+        return df
 
     if "generation_prompt_version" in df.columns:
         df = df[df["generation_prompt_version"] == args.generation_prompt_version]
