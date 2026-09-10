@@ -26,6 +26,12 @@ extract_model_embedded_opinion.py / extract_model_generation_perplexity.py /
 extract_generations_llamaguard.py's output layout). Habermas opinions are
 human-written, so --generator_model_id/--generator_prompt_version (which only name
 a generation-CSV lookup) are ignored for it.
+
+--run_on (all/open/closed) filters which judge models are included: "open" keeps
+only judge_model_ids that are REGISTRY keys (models run locally, e.g. via score.py),
+"closed" keeps everything else (API-only judges scored via score_openrouter.py,
+identified by an OpenRouter slug like "anthropic/claude-haiku-4.5"). It is appended
+as an extra directory level under {output_dir}/{dataset_id}/.
 """
 import argparse
 import json
@@ -39,6 +45,7 @@ import pandas as pd
 
 from utils.evaluation_utils import calculate_pc_from_df, calculate_rs_from_df
 from utils.prompts_utils import LABEL_MAPPING, CATEGORY_MAPPING
+from utils.models_utils import REGISTRY
 
 SCORING_DF_COLUMNS = [
     "id_1", "situation_id_1", "text_id_1", "stance_1", "text_1",
@@ -55,6 +62,12 @@ def parse_command_line_args():
         help="Which dataset's scoring/perplexity/alignment results to analyse. Selects the "
              "{dataset_id} subdirectory under --scoring_dir/--perplexity_dir/--alignment_dir "
              "and --output_dir.",
+    )
+    parser.add_argument(
+        "--run_on", type=str, default="all", choices=["all", "open", "closed"],
+        help="Which judge models to include: 'open' (REGISTRY models, run locally), "
+             "'closed' (API-only judges scored via score_openrouter.py), or 'all'. "
+             "Appended as an extra directory level under --output_dir/{dataset_id}/.",
     )
     # Only used for --dataset_id=valueprism (habermas scoring files have no
     # generator prefix, since the opinions are human-written).
@@ -103,15 +116,36 @@ def _scoring_prefix(args) -> str:
     return f"{args.generator_model_id}_{args.generator_prompt_version}_"
 
 
+def is_open_judge(judge_model_id: str) -> bool:
+    """A judge is 'open' if it's a REGISTRY key (run locally, e.g. via score.py) --
+    everything else is an OpenRouter slug (e.g. "anthropic/claude-haiku-4.5"), i.e.
+    an API-only 'closed' judge scored via score_openrouter.py."""
+    return judge_model_id in REGISTRY
+
+
+def _passes_run_on(judge_model_id: str, run_on: str) -> bool:
+    if run_on == "all":
+        return True
+    return is_open_judge(judge_model_id) == (run_on == "open")
+
+
 def discover_judge_model_ids(args) -> list[str]:
     """Judge models are whatever scoring CSVs exist for this generator/prompt,
-    rather than a hardcoded list, so newly-scored judges are picked up automatically."""
+    rather than a hardcoded list, so newly-scored judges are picked up automatically.
+
+    Uses a recursive glob: an OpenRouter-slug judge_model_id (e.g.
+    "anthropic/claude-haiku-4.5") contains a literal "/", which makes
+    resolve_output_path nest it into a real subdirectory rather than a flat
+    filename, so a single-level glob would silently miss those files."""
     prefix = _scoring_prefix(args)
     suffix = f"_{args.scoring_prompt_version}.csv"
     judge_model_ids = []
-    for f in sorted(args.scoring_dir.glob(f"{prefix}*{suffix}")):
-        judge_model_id = f.name[len(prefix):-len(suffix)]
-        if judge_model_id:
+    for f in sorted(args.scoring_dir.rglob(f"*{suffix}")):
+        rel = f.relative_to(args.scoring_dir).as_posix()
+        if not rel.startswith(prefix):
+            continue
+        judge_model_id = rel[len(prefix):-len(suffix)]
+        if judge_model_id and _passes_run_on(judge_model_id, args.run_on):
             judge_model_ids.append(judge_model_id)
     return judge_model_ids
 
@@ -540,7 +574,7 @@ def main():
     args.perplexity_dir = args.perplexity_dir / args.dataset_id
     args.alignment_dir = args.alignment_dir / args.dataset_id
     args.llama_guard_dir = args.llama_guard_dir / args.dataset_id
-    args.output_dir = args.output_dir / args.dataset_id
+    args.output_dir = args.output_dir / args.dataset_id / args.run_on
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     judge_model_ids = discover_judge_model_ids(args)
@@ -548,9 +582,9 @@ def main():
         if args.dataset_id == "valueprism":
             raise SystemExit(
                 f"No scoring files found for generator={args.generator_model_id!r}, "
-                f"prompt={args.generator_prompt_version!r} in {args.scoring_dir}"
+                f"prompt={args.generator_prompt_version!r}, run_on={args.run_on!r} in {args.scoring_dir}"
             )
-        raise SystemExit(f"No scoring files found in {args.scoring_dir}")
+        raise SystemExit(f"No scoring files found for run_on={args.run_on!r} in {args.scoring_dir}")
     print(f"Judge models: {judge_model_ids}")
 
     for analysis_type, spec in ANALYSIS_REGISTRY.items():

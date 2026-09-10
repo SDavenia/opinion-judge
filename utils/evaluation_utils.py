@@ -9,16 +9,24 @@ def get_den_normalization(n:int, range_size:float):
 def calculate_rs(scores: list[list[float]], # [[esempio1_prompt01_1, esempio1_prompt01_2, ...], ]
                  range: tuple[float, float] = (0.0,1.0)) -> float:
 
-    n = len(scores)
     tot_sum = 0.0
+    n = 0
     size_range = range[1] - range[0]
     for scores_query in scores:
+        if len(scores_query) < 2:
+            # No repeated judgments to compare for this query (den_normalization
+            # would be 0, since there are no pairs to take an abs-diff over) --
+            # skip it rather than divide by zero; it carries no stability signal.
+            continue
         combined_score_pairs = combinations(scores_query, 2)
         abs_diff = [abs(s-s2) for (s, s2) in combined_score_pairs]
         sum_abs_diff = sum(abs_diff)
         den_normalization = get_den_normalization(len(scores_query),size_range) #this normalization is inside in case a number of different trials is conducted for different queries
         tot_sum += (sum_abs_diff/den_normalization)
-        
+        n += 1
+
+    if n == 0:
+        return float("nan")
     rs = 1-((1/n) * tot_sum)
     return rs
 
