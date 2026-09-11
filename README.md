@@ -62,6 +62,7 @@ For each unique situation in a dataset, repeatedly prompts a model to state its 
 - **Output:** under `{output_dir}/{dataset_id}/{judge_model_id}/` (default `output_dir` is `model_alignment/`):
   - `{alignment_prompt_version}_generations.csv` — one row per sample: `situation, generation, parsed_evaluations`.
   - `{alignment_prompt_version}.csv` — one row per unique situation: `situation_id, situation, alignment_distribution` (JSON string of `p(label)` per label + `total_evaluations`; parse with `json.loads`).
+- [extract_model_embedded_opinion_openrouter.py](extract_model_embedded_opinion_openrouter.py) is the API-based equivalent — same `--dataset_id`/`--alignment_prompt_version`/output conventions (so local and OpenRouter judges land in the same `model_alignment/{dataset_id}/` tree), but `--judge_model_id` is a free-form OpenRouter slug (e.g. `openai/gpt-5.4-nano`) rather than a `REGISTRY` key, and generation is driven by concurrent OpenRouter chat-completion calls (`--max_concurrency`, `--max_retries`, periodic checkpointing via `--checkpoint_every`) instead of local batched HF `generate()`.
 
 ### [extract_model_generation_perplexity.py](extract_model_generation_perplexity.py)
 

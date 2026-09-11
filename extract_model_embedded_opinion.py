@@ -22,7 +22,7 @@ def parse_command_line_args():
     )
     parser.add_argument("--judge_model_id", type=str, default="llama-3.2-1b", help="Model ID to use for judging that we need to extract the embedded opinion from")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size for generation")
-    parser.add_argument("--max_new_tokens", type=int, default=20, help="Max new tokens to generate per opinion")
+    parser.add_argument("--max_new_tokens", type=int, default=10, help="Max new tokens to generate per opinion")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for generation")
     parser.add_argument("--n_samples", type=int, default=5, help="Number of times to repeat the generation for each situation")
 
