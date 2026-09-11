@@ -87,7 +87,8 @@ def parse_command_line_args():
     # Text-characteristics args
     # (no extra args needed - computed directly from the scoring dataframe)
 
-    # Emotion characteristics args
+    # Sentiment characteristics args
+    parser.add_argument("--sentiment_dir", type=Path, default="sentiment_scores/")
 
     # llama-guard generation args
     parser.add_argument("--llama_guard_dir", type=Path, default="safety_scores_llamaguard_generations/")
@@ -404,9 +405,69 @@ ALIGNMENT_CHARACTERISTICS = {
 # [GEN] [0,1] Lexicon-based - ex-post (no ex-ante lexicon split available yet).
 LEXICON_SPEC = None
 
-# [GEN] [score] Emotion-based - average/max/min/diff polarity or emotion score
+# [GEN] [score] Sentiment-based - average/max/min/diff polarity or sentiment score
 # over the generator's texts.
-EMOTION_SPEC = None
+
+def enrich_sentiment(
+        scoring_df: pd.DataFrame, args, judge_model_id
+) -> pd.DataFrame | None:
+
+    #Sentiment scores
+    path_sentiment_scores = args.sentiment_dir / "opinion_sentiment_scores.csv"
+    if not path_sentiment_scores.is_file():
+        return None
+    df_sentiment = pd.read_csv(path_sentiment_scores)
+    df = scoring_df.copy()
+    df = df.merge(
+            df_sentiment[
+                ["text_id", "sentiment_score"]
+            ].rename(
+                columns={
+                    "text_id": "text_id_1",
+                    "sentiment_score": "sentiment_score_opinion_1",
+                }
+            ),
+            on="text_id_1",
+            how="left",
+        )
+    
+    df = df.merge(
+            df_sentiment[
+                ["text_id", "sentiment_score"]
+            ].rename(
+                columns={
+                    "text_id": "text_id_2",
+                    "sentiment_score": "sentiment_score_opinion_2",
+                }
+            ),
+            on="text_id_2",
+            how="left",
+        )
+
+    df["avg_sentiment_score_opinion"] = (
+        df["sentiment_score_opinion_1"]
+        + df["sentiment_score_opinion_2"]
+    ) / 2
+    df["max_sentiment_score_opinion"] = df[
+        ["sentiment_score_opinion_1", "sentiment_score_opinion_2"]
+    ].max(axis=1)
+    df["min_sentiment_score_opinion"] = df[
+        ["sentiment_score_opinion_1", "sentiment_score_opinion_2"]
+    ].min(axis=1)
+    df["diff_sentiment_score_opinion"] = (
+        df["sentiment_score_opinion_1"]
+        - df["sentiment_score_opinion_2"]
+    ).abs()
+
+    return df
+
+SENTIMENT_CHARACTERISTICS = {
+    "avg_sentiment_score_opinion": "Average sentiment Score for opinion",
+    "max_sentiment_score_opinion": "Maximum sentiment Score for opinion",
+    "min_sentiment_score_opinion": "Minimum sentiment Score for opinion",
+    "diff_sentiment_score_opinion": "Perplexity sentiment Score for opinion",
+
+}
 
 # [GEN] [score] Safety-guardrails - Llama-Guard probability of "safe" on the
 # generator's generations.
@@ -520,7 +581,8 @@ ANALYSIS_REGISTRY = {
     "perplexity": {"enrich": enrich_perplexity, "characteristics": PERPLEXITY_CHARACTERISTICS},
     "alignment": {"enrich": enrich_alignment, "characteristics": ALIGNMENT_CHARACTERISTICS},
     "lexicon": LEXICON_SPEC,
-    "emotion": EMOTION_SPEC,
+    "sentiment": {"enrich": enrich_sentiment,
+                  "characteristics": SENTIMENT_CHARACTERISTICS},
     "llama_guard_generator": {"enrich": enrich_llamaguard,
                 "characteristics": LLAMA_GUARD_CHARACTERISTICS},
     "refusal": REFUSAL_SPEC,
@@ -574,6 +636,7 @@ def main():
     args.perplexity_dir = args.perplexity_dir / args.dataset_id
     args.alignment_dir = args.alignment_dir / args.dataset_id
     args.llama_guard_dir = args.llama_guard_dir / args.dataset_id
+    args.sentiment_dir = args.sentiment_dir / args.dataset_id
     args.output_dir = args.output_dir / args.dataset_id / args.run_on
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
